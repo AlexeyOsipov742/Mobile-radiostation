@@ -42,7 +42,7 @@ char *find_ttyUSB_port() {
 int main() {
     int fd;
     struct termios options;
-    char buffer[BUFFER_SIZE];
+    unsigned char buffer[BUFFER_SIZE];
 
     char *port = find_ttyUSB_port();
     printf("Found ttyUSB port: %s\n", port);
@@ -69,13 +69,10 @@ int main() {
     ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
     status &= ~TIOCM_DTR; // Отключаем DTR
     ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
+    usleep(100000);
 
-    // Включаем сигнал RTS
-    ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
-    status |= TIOCM_RTS; // Устанавливаем RTS
-    ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
-
-
+    // Устанавливаем флаг RTS
+    options.c_cflag |= CRTSCTS;
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
 
@@ -94,15 +91,22 @@ int main() {
     while (1) {
         bytes_read = read(fd, buffer, BUFFER_SIZE);
         if (bytes_read > 0) {
-            printf("Received data: %s\n", buffer);
-            fwrite(buffer, 1, bytes_read, file);
-            fflush(file); // Очистка буфера вывода для немедленной записи данных в файл
-        } else if (bytes_read == -1) {
+            //printf("Received data: ");
+            for (int i = 0; i < bytes_read; ++i) {
+                printf("Received data: %02X\n", buffer[i]); // Выводим байты в шестнадцатеричном формате
+                fprintf(file, "%02X", buffer[i]);
+            }
+            fflush(stdout); // Принудительно очищаем буфер вывода в терминал
+            fflush(file);
+         } else if (bytes_read == -1) {
             perror("Error reading from port - ");
             break;
         }
     }
 
+    // Закрываем файл
+    fclose(file);
+    
     // Закрываем COM порт для приёма
     close(fd);
 
