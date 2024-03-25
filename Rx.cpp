@@ -6,7 +6,9 @@
 #include <string.h>
 #include <errno.h>
 #include <dirent.h>
-]
+#include <sys/ioctl.h>
+
+#define BUFFER_SIZE 255
 #define DEV_DIR "/dev"
 
 char *find_ttyUSB_port() {
@@ -40,7 +42,7 @@ char *find_ttyUSB_port() {
 int main() {
     int fd;
     struct termios options;
-    const char message[] = "\x05\x04\xFF\x57\xCC";
+    char buffer[BUFFER_SIZE];
 
     char *port = find_ttyUSB_port();
     printf("Found ttyUSB port: %s\n", port);
@@ -54,7 +56,7 @@ int main() {
     // Получаем текущие параметры порта
     tcgetattr(fd, &options);
 
-    // Устанавливаем стандартные параметры порта для передачи
+    // Устанавливаем стандартные параметры порта для приёма
     cfsetispeed(&options, B9600);
     cfsetospeed(&options, B9600);
     options.c_cflag &= ~PARENB;    // Без контроля четности
@@ -62,22 +64,46 @@ int main() {
     options.c_cflag &= ~CSIZE;     // Сбрасываем биты размера байта
     options.c_cflag |= CS8;        // Устанавливаем 8 битов данных
 
-    // Устанавливаем флаг HUPCL
-    options.c_cflag |= HUPCL;
+    // Отключаем сигнал DTR
+    int status;
+    ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
+    status &= ~TIOCM_DTR; // Отключаем DTR
+    ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
+
+    // Включаем сигнал RTS
+    ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
+    status |= TIOCM_RTS; // Устанавливаем RTS
+    ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
+
 
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
 
-    usleep(10000);
 
-    // Записываем сообщение в порт
-    int bytes_written = write(fd, message, strlen(message));
-    if (bytes_written < 0) {
-        perror("Error writing to port - ");
+    // Открываем файл для записи данных
+    FILE *file = fopen("received_data.txt", "w");
+    if (!file) {
+        perror("Failed to open file");
         return 1;
     }
 
-    // Закрываем COM порт для передачи
+    usleep(100000);
+
+    // Читаем данные из порта
+    ssize_t bytes_read;
+    while (1) {
+        bytes_read = read(fd, buffer, BUFFER_SIZE);
+        if (bytes_read > 0) {
+            printf("Received data: %s\n", buffer);
+            fwrite(buffer, 1, bytes_read, file);
+            fflush(file); // Очистка буфера вывода для немедленной записи данных в файл
+        } else if (bytes_read == -1) {
+            perror("Error reading from port - ");
+            break;
+        }
+    }
+
+    // Закрываем COM порт для приёма
     close(fd);
 
     return 0;
