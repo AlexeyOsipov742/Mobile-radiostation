@@ -1,14 +1,8 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-
+#include "TxRx.h"
 #define PORT 1488
+#define FILENAME "received_data.txt"
 
-int main() {
+int RxEth() {
     int sockfd, newsockfd;
     socklen_t clilen;
     char buffer[256];
@@ -64,6 +58,16 @@ int main() {
         perror("Error writing to socket");
         exit(1);
     }
+     // Записываем данные в файл
+    FILE *file = fopen(FILENAME, "w");
+    if (!file) {
+        perror("Error opening file");
+        exit(1);
+    }
+    fprintf(file, "%s", buffer);
+    fclose(file);
+    printf("Data written to file: %s\n", FILENAME);
+
 
     // Закрываем сокеты
     close(newsockfd);

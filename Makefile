@@ -1,2 +1,2 @@
 all:
-	g++ project.cpp -o project -lsfml-graphics -lsfml-window -lsfml-system -lsfml-audio
+	gcc -g Tx.cpp RxEth.cpp Eth-to-com.cpp -o etc

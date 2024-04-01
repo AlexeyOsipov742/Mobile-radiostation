@@ -1,11 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <termios.h>
-#include <string.h>
-#include <errno.h>
-#include <dirent.h>
+#include "TxRx.h"
 #define DEV_DIR "/dev"
 
 char *find_ttyUSB_port() {
@@ -36,10 +29,11 @@ char *find_ttyUSB_port() {
     return port;
 }
 
-int main() {
+int Tx() {
     int fd;
     struct termios options;
-    const char message[] = "\x05\x04\xFF\x57\xCC";
+    FILE *file;
+    char buffer[256];
 
     char *port = find_ttyUSB_port();
     printf("Found ttyUSB port: %s\n", port);
@@ -69,14 +63,28 @@ int main() {
 
     usleep(10000);
 
-    // Записываем сообщение в порт
-    int bytes_written = write(fd, message, strlen(message));
-    if (bytes_written < 0) {
-        perror("Error writing to port - ");
+    // Открываем файл для чтения
+    file = fopen("received_data.txt", "r");
+    if (!file) {
+        perror("Error opening file");
         return 1;
     }
 
-    // Закрываем COM порт для передачи
+    // Читаем данные из файла
+    size_t bytes_read = fread(buffer, sizeof(char), sizeof(buffer), file);
+    if (bytes_read > 0) {
+        // Отправляем данные через COM порт
+        int bytes_written = write(fd, buffer, bytes_read);
+        if (bytes_written < 0) {
+            perror("Error writing to port - ");
+            fclose(file);
+            close(fd);
+            return 1;
+        }
+    }
+
+    // Закрываем файл и COM порт для передачи
+    fclose(file);
     close(fd);
 
     return 0;
