@@ -6,7 +6,6 @@
 #include <string.h>
 #include <errno.h>
 #include <dirent.h>
-]
 #define DEV_DIR "/dev"
 
 char *find_ttyUSB_port() {
