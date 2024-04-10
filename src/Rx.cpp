@@ -1,15 +1,11 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <termios.h>
-#include <string.h>
-#include <errno.h>
-#include <dirent.h>
-#include <sys/ioctl.h>
+#include "TxRx.h"
 
 #define BUFFER_SIZE 255
 #define DEV_DIR "/dev"
+
+
+
+
 
 char *find_ttyUSB_port() {
     DIR *dir;
@@ -39,15 +35,24 @@ char *find_ttyUSB_port() {
     return port;
 }
 
-int main() {
+
+
+
+
+
+
+
+int Rx() {
     int fd;
     struct termios options;
     unsigned char buffer[BUFFER_SIZE];
+    
+    printf("RX EXECS NOW\n");
 
     char *port = find_ttyUSB_port();
     printf("Found ttyUSB port: %s\n", port);
     // Открываем COM порт для передачи
-    fd = open(port, O_RDWR | O_NOCTTY);
+    fd = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd == -1) {
         perror("open_port: Unable to open /dev/ttyUSB0 - ");
         return 1;
@@ -64,6 +69,9 @@ int main() {
     options.c_cflag &= ~CSIZE;     // Сбрасываем биты размера байта
     options.c_cflag |= CS8;        // Устанавливаем 8 битов данных
 
+    //options.c_cc[VTIME] = 10;
+    //options.c_cc[VMIN] = 0;
+
     // Отключаем сигнал DTR
     int status;
     ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
@@ -75,7 +83,7 @@ int main() {
     options.c_cflag |= CRTSCTS;
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
-
+    
 
     // Открываем файл для записи данных
     FILE *file = fopen("received_data.txt", "w");
@@ -86,24 +94,50 @@ int main() {
 
     usleep(100000);
 
-    // Читаем данные из порта
-    ssize_t bytes_read;
-    while (1) {
+    ssize_t bytes_read = 0;
+    // Ожидаем первой порции данных
+    while (bytes_read <= 0) {
         bytes_read = read(fd, buffer, BUFFER_SIZE);
-        if (bytes_read > 0) {
-            //printf("Received data: ");
-            for (int i = 0; i < bytes_read; ++i) {
-                printf("Received data: %02X\n", buffer[i]); // Выводим байты в шестнадцатеричном формате
-                fprintf(file, "%02X", buffer[i]);
+        if (bytes_read == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Если нет данных для чтения, продолжаем ожидать
+                continue;
+            } else {
+                perror("read error");
+                fclose(file);
+                close(fd);
+                return 1;
             }
-            fflush(stdout); // Принудительно очищаем буфер вывода в терминал
-            fflush(file);
-         } else if (bytes_read == -1) {
-            perror("Error reading from port - ");
-            break;
         }
     }
 
+    time_t start_time = time(NULL); // Засекаем начальное время чтения данных
+    while ((time(NULL) - start_time) < 2) {
+        bytes_read = read(fd, buffer, BUFFER_SIZE); // Читаем данные из порта
+        if (bytes_read == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Если нет данных для чтения, продолжаем цикл
+                continue;
+            } else {
+                perror("read error");
+                fclose(file);
+                close(fd);
+                return 1;
+            }
+        }
+        
+        // Если есть данные для чтения, записываем их в файл
+        for (int i = 0; i < bytes_read; ++i) {
+            printf("Received data: %02X\n", buffer[i]);
+            fprintf(file, "%02X", buffer[i]);
+        }
+
+        fflush(stdout);
+        fflush(file);
+    }
+
+    printf("WHILE EDNED\n");
+    
     // Закрываем файл
     fclose(file);
     

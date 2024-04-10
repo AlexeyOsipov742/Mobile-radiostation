@@ -9,9 +9,16 @@
 #include <termios.h>
 #include <errno.h>
 #include <dirent.h>
+#include <sys/ioctl.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <time.h>
 
+int Rx();
 int Tx();
 char *find_ttyUSB_port();
 int RxEth();
+int TxEth();
+
 
 

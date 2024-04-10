@@ -1,5 +1,5 @@
 #include "TxRx.h"
-#define PORT 1488
+#define PORT 1234
 #define FILENAME "received_data.txt"
 
 int RxEth() {
