@@ -77,7 +77,7 @@ int Rx() {
     ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
     status &= ~TIOCM_DTR; // Отключаем DTR
     ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
-    usleep(100000);
+    //usleep(100000);
 
     // Устанавливаем флаг RTS
     options.c_cflag |= CRTSCTS;
@@ -92,7 +92,7 @@ int Rx() {
         return 1;
     }
 
-    usleep(100000);
+    //usleep(100000);
 
     ssize_t bytes_read = 0;
     // Ожидаем первой порции данных
@@ -111,8 +111,12 @@ int Rx() {
         }
     }
 
+    for (int i = 0; i < bytes_read; ++i) {
+            fprintf(file, "%02X", buffer[i]);
+        }
+
     time_t start_time = time(NULL); // Засекаем начальное время чтения данных
-    while ((time(NULL) - start_time) < 2) {
+    while ((time(NULL) - start_time) < 0.25) {
         bytes_read = read(fd, buffer, BUFFER_SIZE); // Читаем данные из порта
         if (bytes_read == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {

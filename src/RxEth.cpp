@@ -53,11 +53,12 @@ int RxEth() {
     printf("Here is the message: %s\n", buffer);
 
     // Отправляем подтверждение клиенту
-    n = write(newsockfd, "I got your message", 18);
+    /*n = write(newsockfd, "I got your message", 18);
     if (n < 0) {
         perror("Error writing to socket");
         exit(1);
-    }
+    }*/
+    
      // Записываем данные в файл
     FILE *file = fopen(FILENAME, "w");
     if (!file) {

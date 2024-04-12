@@ -5,7 +5,7 @@ int main() {
         
         RxEth();
         Tx();
-        sleep(1);
+        usleep(10000);
         Rx();
         TxEth();
         
