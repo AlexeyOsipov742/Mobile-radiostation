@@ -1,37 +1,13 @@
 #include "TxRx.h"
+
 #define SERVER_IP "192.168.1.2" // IP адрес сервера
 #define SERVER_PORT 1234 // Порт сервера
-#define MAX_BUFFER_SIZE 1024     // Максимальный размер буфера для данных
 
-
-int TxEth() {
-    FILE *file;
-    char buffer[MAX_BUFFER_SIZE];
+void TxEth(unsigned char * buffer) { // TODO Change int to void, or return error codes instead of exit
     int sockfd;
     struct sockaddr_in server_addr;
 
     printf("TX_ETH EXECS NOW\n");
-
-    // Открыть файл для чтения
-    file = fopen("received_data.txt", "r");
-    if (!file) {
-        perror("Error opening file");
-        exit(EXIT_FAILURE);
-    }
-    
-    usleep(100000);
-    
-    // Прочитать данные из файла
-    if (fgets(buffer, MAX_BUFFER_SIZE, file) == NULL) {
-        perror("Error reading from file");
-        fclose(file);
-        exit(EXIT_FAILURE);
-    }
-
-    // Закрыть файл
-    fclose(file);
-
-    //printf("Buffer: %s\n", buffer);
 
     // Создание сокета
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -42,6 +18,7 @@ int TxEth() {
     // Настройка структуры адреса сервера
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
+
     if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
         perror("Invalid address/ Address not supported");
         exit(EXIT_FAILURE);
@@ -53,11 +30,10 @@ int TxEth() {
         exit(EXIT_FAILURE);
     }
 
+    /*for (int i = 0; i < BUFFER_SIZE; ++i) 
+        printf("Transmited data: %02X (Char: `%c`, Int: `%d`)\n", buffer[i], buffer[i], buffer[i]);
+*/
     // Отправка сообщения на сервер
-    send(sockfd, buffer, strlen(buffer), 0);
-    printf("Message sent to server: %s\n", buffer);
-
+    send(sockfd, buffer, BUFFER_SIZE, 0);
     close(sockfd);
-
-    return 0;
 }
