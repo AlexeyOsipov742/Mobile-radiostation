@@ -5,12 +5,11 @@ int main() {
 
     while (1) {
         memset(buffer, 0, BUFFER_SIZE);
-
+        
+        
         RxEth(buffer);
         Tx(buffer);
-
         usleep(1000);
-
         Rx(buffer);
         TxEth(buffer);
     }
