@@ -13,7 +13,7 @@ char *find_ttyUSB_port() {
     }
 
     while ((entry = readdir(dir)) != NULL) {
-        if (strncmp(entry->d_name, "ttyUSB", 6) == 0) {
+        if (strncmp(entry->d_name, "ttyAMA", 6) == 0) {
             port = (char*)malloc(strlen(DEV_DIR) + strlen(entry->d_name) + 2);
             if (!port) {
                 perror("Memory allocation error");
@@ -34,6 +34,7 @@ void Rx(unsigned char * buffer) {
     struct termios options;
     
     printf("RX EXECS NOW\n");
+    
 
     char *port = find_ttyUSB_port();
     printf("Found ttyUSB port: %s\n", port);

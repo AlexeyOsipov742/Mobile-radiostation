@@ -23,4 +23,4 @@ clean:
 		rm build/cte
 
 prepare:
-		@mkdir -p $(buildDir)
+		@mkdir -p $(buildDir)	

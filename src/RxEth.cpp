@@ -1,5 +1,5 @@
 #include "TxRx.h"
-#define PORT 1234
+#define PORT 5678
 
 void RxEth(unsigned char * buffer) { 
     int sockfd, newsockfd;

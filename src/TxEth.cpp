@@ -1,7 +1,7 @@
 #include "TxRx.h"
 
-#define SERVER_IP "192.168.1.2" // IP адрес сервера
-#define SERVER_PORT 1234 // Порт сервера
+#define SERVER_IP "10.10.1.211" // IP адрес сервера
+#define SERVER_PORT 5678 // Порт сервера
 
 void TxEth(unsigned char * buffer) { // TODO Change int to void, or return error codes instead of exit
     int sockfd;
