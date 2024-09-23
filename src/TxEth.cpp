@@ -1,6 +1,7 @@
 #include "TxRx.h"
 
-#define SERVER_IP "10.10.1.211" // IP адрес сервера
+//#define SERVER_IP "192.168.0.105" // IP адрес дом
+#define SERVER_IP "10.10.1.211"  // IP адрес работа
 #define SERVER_PORT 5678 // Порт сервера
 
 void TxEth(unsigned char * buffer) { // TODO Change int to void, or return error codes instead of exit
@@ -29,7 +30,7 @@ void TxEth(unsigned char * buffer) { // TODO Change int to void, or return error
         perror("Connection failed");
         exit(EXIT_FAILURE);
     }
-
+    
     /*for (int i = 0; i < BUFFER_SIZE; ++i) 
         printf("Transmited data: %02X (Char: `%c`, Int: `%d`)\n", buffer[i], buffer[i], buffer[i]);
 */

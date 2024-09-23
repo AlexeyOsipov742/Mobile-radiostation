@@ -1,4 +1,5 @@
 #include "TxRx.h"
+#include <sys/ioctl.h>
 #define DEV_DIR "/dev"
 
 char *find_ttyUSB_port() {
@@ -37,11 +38,11 @@ void Rx(unsigned char * buffer) {
     
 
     char *port = find_ttyUSB_port();
-    printf("Found ttyUSB port: %s\n", port);
+    printf("Found ttyAMA port: %s\n", port);
     // Открываем COM порт для передачи
     fd = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd == -1) {
-        perror("open_port: Unable to open /dev/ttyUSB0 - ");
+        perror("open_port: Unable to open /dev/ttyAMA0 - ");
     }
 
     // Получаем текущие параметры порта
@@ -55,18 +56,17 @@ void Rx(unsigned char * buffer) {
     options.c_cflag &= ~CSIZE;     // Сбрасываем биты размера байта
     options.c_cflag |= CS8;        // Устанавливаем 8 битов данных
 
-    //options.c_cc[VTIME] = 10;
-    //options.c_cc[VMIN] = 0;
-
-    // Отключаем сигнал DTR
+    // Устанавливаем флаг RTS
+    options.c_cflag |= CRTSCTS;
+    
+    // Отключаем сигнал RTS
     int status;
     ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
-    status &= ~TIOCM_DTR; // Отключаем DTR
+    status &= ~TIOCM_RTS; // Отключаем RTS
     ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
     //usleep(100000);
 
-    // Устанавливаем флаг RTS
-    options.c_cflag |= CRTSCTS;
+    
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
     
