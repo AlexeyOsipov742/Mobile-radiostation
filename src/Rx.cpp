@@ -1,6 +1,5 @@
 #include "TxRx.h"
-#include <sys/ioctl.h>
-#define DEV_DIR "/dev"
+
 
 char *find_ttyUSB_port() {
     DIR *dir;
@@ -14,7 +13,7 @@ char *find_ttyUSB_port() {
     }
 
     while ((entry = readdir(dir)) != NULL) {
-        if (strncmp(entry->d_name, "ttyAMA", 6) == 0) {
+        if (strncmp(entry->d_name, TTY, 6) == 0) {
             port = (char*)malloc(strlen(DEV_DIR) + strlen(entry->d_name) + 2);
             if (!port) {
                 perror("Memory allocation error");
@@ -30,15 +29,15 @@ char *find_ttyUSB_port() {
     return port;
 }
 
-void Rx(unsigned char * buffer) {
+void Rx(short * buffer) {
     int fd;
     struct termios options;
     
     printf("RX EXECS NOW\n");
     
-
     char *port = find_ttyUSB_port();
     printf("Found ttyAMA port: %s\n", port);
+
     // Открываем COM порт для передачи
     fd = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd == -1) {
@@ -51,6 +50,8 @@ void Rx(unsigned char * buffer) {
     // Устанавливаем стандартные параметры порта для приёма
     cfsetispeed(&options, B9600);
     cfsetospeed(&options, B9600);
+
+    // Устанавливаем параметры порта
     options.c_cflag &= ~PARENB;    // Без контроля четности
     options.c_cflag &= ~CSTOPB;    // Один стоп-бит
     options.c_cflag &= ~CSIZE;     // Сбрасываем биты размера байта
@@ -66,13 +67,11 @@ void Rx(unsigned char * buffer) {
     ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
     //usleep(100000);
 
-    
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
     
-    //usleep(100000);
-
     ssize_t bytes_read = 0;
+
     // Ожидаем первой порции данных
     while (bytes_read <= 0) {
         bytes_read = read(fd, buffer, BUFFER_SIZE);
@@ -93,19 +92,16 @@ void Rx(unsigned char * buffer) {
 
     while ((time(NULL) - start_time) < 0.05) {
         bytes_read = read(fd, buffer, BUFFER_SIZE); // Читаем данные из порта
-
         if (bytes_read == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // Если нет данных для чтения, продолжаем цикл
                 continue;
-            } 
-            
+            }
             else {
                 perror("read error");
                 close(fd);
             }
         }
-
         buffer += bytes_read;
         
         /*for (int i = 0; i < bytes_read; ++i) 

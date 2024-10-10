@@ -2,13 +2,15 @@
 #include <sys/ioctl.h>
 #define DEV_DIR "/dev"
 
-void Tx(unsigned char *buffer) {
+void Tx(short *buffer) {
+
     int fd;
     struct termios options;
 
     printf("TX EXECS NOW\n");
 
     char *port = find_ttyUSB_port();
+
     printf("Found ttyAMA port: %s\n", port);
 
     // Открываем COM порт для передачи
@@ -44,8 +46,6 @@ void Tx(unsigned char *buffer) {
     
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
-
-    //usleep(10000);
 
     // Отправляем данные через COM порт
     int bytes_written = write(fd, buffer, BUFFER_SIZE);

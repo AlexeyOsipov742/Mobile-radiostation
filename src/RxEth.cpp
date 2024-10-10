@@ -1,7 +1,6 @@
 #include "TxRx.h"
-#define PORT 5678
 
-void RxEth(unsigned char * buffer) { 
+void RxEth(short * buffer) { 
     int sockfd, newsockfd;
     socklen_t clilen;
     struct sockaddr_in serv_addr, cli_addr;
@@ -47,15 +46,8 @@ void RxEth(unsigned char * buffer) {
         perror("Error reading from socket");
         exit(1);
     }
-
-    // Отправляем подтверждение клиенту
-    /*n = write(newsockfd, "I got your message", 18);
-    if (n < 0) {
-        perror("Error writing to socket");
-        exit(1);
-    }*/
     
     // Закрываем сокеты
     close(newsockfd);
     close(sockfd);
-}
+}   

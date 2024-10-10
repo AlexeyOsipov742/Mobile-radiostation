@@ -1,18 +1,16 @@
 #include "TxRx.h"
 
 int main() {   
-    unsigned char buffer[BUFFER_SIZE]; // Выделение памяти для буфера
+    
+    short *buffer = (short *)malloc(BUFFER_SIZE * sizeof(short));// Выделение памяти для буфера
 
     while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
-        
-        RxEth(buffer);
-        Tx(buffer);
+        //RxEth(buffer);
+        //Tx(buffer);
         //audioRxEth(buffer);
-        //audioTxEth(buffer);
-        Rx(buffer);
-        TxEth(buffer);
-        
+        audioTxEth(buffer);
+        //Rx(buffer);
+        //TxEth(buffer);
     }
 
     return 0;
