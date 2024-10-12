@@ -1,10 +1,11 @@
 #include "TxRx.h"
-#include <alsa/asoundlib.h>
 
 void audioRxEth(short *buffer) {
     //Параметры для захвата звука
     snd_pcm_t *playback_handle;
     snd_pcm_hw_params_t *hw_params;
+    snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
+    snd_pcm_uframes_t local_periods = PERIODS;
 
     // Создание сокета для передачи данных
     int sockfd, newsockfd;
@@ -28,7 +29,7 @@ void audioRxEth(short *buffer) {
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(5678);
+    serv_addr.sin_port = htons(PORT);
 
     if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("Bind error");
@@ -44,7 +45,7 @@ void audioRxEth(short *buffer) {
     }
 
     // Открываем PCM устройство
-    if (snd_pcm_open(&playback_handle, "plughw:1,0", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
+    if (snd_pcm_open(&playback_handle, "plughw:0,0", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
         perror("Cannot open audio device");
         close(sockfd);
         return;
@@ -57,6 +58,11 @@ void audioRxEth(short *buffer) {
         close(sockfd);
         return;
     }
+
+    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
+    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+
+    printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
 
     if (snd_pcm_hw_params_any(playback_handle, hw_params) < 0) {
         perror("Cannot configure this PCM device");
@@ -106,6 +112,22 @@ void audioRxEth(short *buffer) {
         return;
     }
 
+    if (snd_pcm_hw_params_set_buffer_size_near(playback_handle, hw_params, &local_buffer) < 0) {
+        perror("Cannot set buffer size near");
+        snd_pcm_hw_params_free(hw_params);
+        snd_pcm_close(playback_handle);
+        close(sockfd);
+        return;
+    }
+
+    if (snd_pcm_hw_params_set_period_size(playback_handle, hw_params, local_periods, 0) < 0) {
+        perror("Cannot set period size near");
+        snd_pcm_hw_params_free(hw_params);
+        snd_pcm_close(playback_handle);
+        close(sockfd);
+        return;
+    }
+
     if (snd_pcm_hw_params(playback_handle, hw_params) < 0) {
         perror("Cannot set hardware parameters");
         snd_pcm_hw_params_free(hw_params);
@@ -137,11 +159,11 @@ void audioRxEth(short *buffer) {
             break;
         }
 
-        for (int i = 0; i < BUFFER_SIZE; i++) {
+        /*for (int i = 0; i < BUFFER_SIZE; i++) {
             printf("%02x", buffer[i]);
             if (((i + 1) % 16) == 0)
                 printf("\n");
-        }                                           //Отладка
+        }*/                                           //Отладка
 
         int err = 0;    
         int frames = n / (channels * 2);
@@ -156,7 +178,7 @@ void audioRxEth(short *buffer) {
     }
 
     // Освобождаем ресурсы
-    snd_pcm_drain(playback_handle);
+    snd_pcm_drop(playback_handle);
     snd_pcm_close(playback_handle);
     close(newsockfd);
     close(sockfd);

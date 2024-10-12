@@ -1,5 +1,9 @@
 #include "TxRx.h"
 
+#define SERVER_IP "192.168.1.112" // IP адрес Митино
+//#define SERVER_IP "192.168.0.119" // IP адрес дом
+//#define SERVER_IP "10.10.1.62"  // IP адрес работа
+
 void audioTxEth(short *buffer) {
     // Параметры для захвата звука
     snd_pcm_t *capture_handle;
@@ -13,20 +17,23 @@ void audioTxEth(short *buffer) {
     unsigned int sampleRate = 44100;
     long int dataCapacity = 0;
     int channels = 2;
+    snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
+    snd_pcm_uframes_t local_periods = PERIODS;
     
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket creation error");
     }
 
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(5678);
-    //serv_addr.sin_addr.s_addr = inet_addr("10.10.1.62"); // IP работа
-    serv_addr.sin_addr.s_addr = inet_addr("192.168.0.119"); // IP дом
+    serv_addr.sin_port = htons(PORT);
+    //serv_addr.sin_addr.s_addr = inet_addr("SERVER_IP"); // IP работа
+    serv_addr.sin_addr.s_addr = inet_addr(SERVER_IP); // IP дом
 
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("Connection failed");
     }
 
+    //printf("sus1\n");
     // Открываем PCM устройство
     if (snd_pcm_open(&capture_handle, "plughw:0,0", SND_PCM_STREAM_CAPTURE, 0) < 0) {
         perror("Cannot open audio device");
@@ -34,6 +41,7 @@ void audioTxEth(short *buffer) {
         return;
     }
 
+    //printf("sus2\n");
     // Выделение памяти для hw_params с использованием malloc
     if (snd_pcm_hw_params_malloc(&hw_params) < 0) {
         perror("Cannot allocate hardware parameters");
@@ -42,6 +50,11 @@ void audioTxEth(short *buffer) {
         return;
     }
 
+    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
+    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+
+    printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
+    //printf("sus3\n");
     if (snd_pcm_hw_params_any(capture_handle, hw_params) < 0) {
         perror("Cannot configure this PCM device");
         snd_pcm_hw_params_free(hw_params);
@@ -111,14 +124,14 @@ void audioTxEth(short *buffer) {
 
    // Основной цикл для захвата и передачи данных
     while (1) {
-        // Захватываем аудиоданные
-        /*int frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE / channels * 2);
+  /*      // Захватываем аудиоданные
+        int frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE / channels * 2);
         if (frames < 0) {
             fprintf(stderr, "Read error: %s\n", snd_strerror(frames));  // Выводим точную ошибку ALSA
             snd_pcm_prepare(capture_handle);  // Попробуем восстановить поток
             continue;
         }
-*/  
+*/
         for (unsigned int i = 0; i < sampleRate; i++) {
 		buffer[i] = 10000 * sinf(2 * M_PI * 200 * ((float)i / sampleRate));
 	    }

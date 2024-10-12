@@ -23,10 +23,9 @@
 
 #define DEV_DIR "/dev"
 #define BUFFER_SIZE 1024
+#define PERIODS 1024;
 #define TTY "ttyAMA"
-#define PORT 8080
-//#define SERVER_IP "192.168.0.105" // IP адрес дом
-#define SERVER_IP "10.10.1.211"  // IP адрес работа
+#define PORT 5678
 
 void Rx(short * buffer);
 void Tx(short * buffer);
