@@ -59,10 +59,6 @@ void audioRxEth(short *buffer) {
         return;
     }
 
-    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
-
-    printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
 
     if (snd_pcm_hw_params_any(playback_handle, hw_params) < 0) {
         perror("Cannot configure this PCM device");
@@ -71,6 +67,11 @@ void audioRxEth(short *buffer) {
         close(sockfd);
         return;
     }
+
+    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
+    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+
+    printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
 
     if (snd_pcm_hw_params_set_rate_resample(playback_handle, hw_params, resample) < 0) {
         perror("Cannot set sample rate");
@@ -112,21 +113,21 @@ void audioRxEth(short *buffer) {
         return;
     }
 
-    if (snd_pcm_hw_params_set_buffer_size_near(playback_handle, hw_params, &local_buffer) < 0) {
+    /*if (snd_pcm_hw_params_set_buffer_size_near(playback_handle, hw_params, &local_buffer) < 0) {
         perror("Cannot set buffer size near");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(playback_handle);
         close(sockfd);
         return;
-    }
+    }*/
 
-    if (snd_pcm_hw_params_set_period_size(playback_handle, hw_params, local_periods, 0) < 0) {
+    /*if (snd_pcm_hw_params_set_period_size(playback_handle, hw_params, local_periods, 0) < 0) {
         perror("Cannot set period size near");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(playback_handle);
         close(sockfd);
         return;
-    }
+    }*/
 
     if (snd_pcm_hw_params(playback_handle, hw_params) < 0) {
         perror("Cannot set hardware parameters");
