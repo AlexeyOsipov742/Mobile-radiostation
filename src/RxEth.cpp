@@ -1,6 +1,6 @@
 #include "TxRx.h"
 
-void RxEth(short * buffer) { 
+void RxEth(unsigned char * buffer) { 
     int sockfd, newsockfd;
     socklen_t clilen;
     struct sockaddr_in serv_addr, cli_addr;

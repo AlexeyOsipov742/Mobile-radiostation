@@ -2,7 +2,7 @@
 #include <sys/ioctl.h>
 #define DEV_DIR "/dev"
 
-void Tx(short *buffer) {
+void Tx(unsigned char *buffer) {
 
     int fd;
     struct termios options;

@@ -2,7 +2,7 @@
 
 int main() {   
     
-    short *buffer = (short *)malloc(BUFFER_SIZE * sizeof(short));// Выделение памяти для буфера
+    unsigned char *buffer = (unsigned char *)malloc(BUFFER_SIZE * sizeof(*buffer));// Выделение памяти для буфера
 
     while (1) {
         //RxEth(buffer);
@@ -12,6 +12,8 @@ int main() {
         //Rx(buffer);
         //TxEth(buffer);
     }
+
+    free(buffer);
 
     return 0;
 }

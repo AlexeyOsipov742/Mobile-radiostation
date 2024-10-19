@@ -27,12 +27,12 @@
 #define TTY "ttyAMA"
 #define PORT 5678
 
-void Rx(short * buffer);
-void Tx(short * buffer);
-void RxEth(short * buffer);
-void TxEth(short * buffer);
-void audioRxEth(short * buffer);
-void audioTxEth(short * buffer);
+void Rx(unsigned char * buffer);
+void Tx(unsigned char * buffer);
+void RxEth(unsigned char * buffer);
+void TxEth(unsigned char * buffer);
+void audioRxEth(unsigned char * buffer);
+void audioTxEth(unsigned char * buffer);
 char * find_ttyUSB_port();
 
 

@@ -4,12 +4,10 @@
 #define SERVER_IP "192.168.0.119" // IP адрес дом
 //#define SERVER_IP "10.10.1.62"  // IP адрес работа
 
-void audioTxEth(short *buffer) {
+void audioTxEth(unsigned char *buffer) {
     // Параметры для захвата звука
     snd_pcm_t *capture_handle;
     snd_pcm_hw_params_t *hw_params;
-    snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
-    snd_pcm_uframes_t local_periods = PERIODS;
 
     // Создание сокета для передачи данных
     int sockfd;
@@ -19,6 +17,8 @@ void audioTxEth(short *buffer) {
     unsigned int sampleRate = 44100;
     long int dataCapacity = 0;
     int channels = 2;
+    snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
+    snd_pcm_uframes_t local_periods = PERIODS;
     
     
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -60,28 +60,11 @@ void audioTxEth(short *buffer) {
         close(sockfd);
         return;
     }
-
-    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+    
+    //snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
+    //snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
 
     //printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
-
-    if (snd_pcm_hw_params_set_rate_resample(capture_handle, hw_params, resample) < 0) {
-        perror("Cannot set sample rate");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-    
-    if (snd_pcm_hw_params_set_access(capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
-        perror("Cannot set access rate");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
     if (snd_pcm_hw_params_set_format(capture_handle, hw_params, SND_PCM_FORMAT_S16_LE) < 0) {
         perror("Cannot set sample format");
         snd_pcm_hw_params_free(hw_params);
@@ -90,16 +73,32 @@ void audioTxEth(short *buffer) {
         return;
     }
 
-    if (snd_pcm_hw_params_set_channels(capture_handle, hw_params, channels) < 0) {
-        perror("Cannot set channel count");
+    if (snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
+        perror("Cannot set access rate");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(capture_handle);
         close(sockfd);
         return;
     }
 
-    if (snd_pcm_hw_params_set_rate_near(capture_handle, hw_params, &sampleRate, 0) < 0) {
+    if (snd_pcm_hw_params_set_channels(capture_handle, hw_params, channels) < 0) {
+            perror("Cannot set channel count");
+            snd_pcm_hw_params_free(hw_params);
+            snd_pcm_close(capture_handle);
+            close(sockfd);
+            return;
+        }
+
+    if (snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &sampleRate, 0) < 0) {
         perror("Cannot set rate near");
+        snd_pcm_hw_params_free(hw_params);
+        snd_pcm_close(capture_handle);
+        close(sockfd);
+        return;
+    }
+
+    if (snd_pcm_hw_params_set_rate_resample(capture_handle, hw_params, resample) < 0) {
+        perror("Cannot set sample rate");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(capture_handle);
         close(sockfd);
@@ -159,24 +158,24 @@ void audioTxEth(short *buffer) {
 
         //printf("sus7\n");
 
-        /*for (unsigned int i = 0; i < sampleRate; i++) {
-		buffer[i] = 10000 * sinf(2 * M_PI * 100 * ((float)i / sampleRate));
+        /*for (unsigned int i = 0; i < BUFFER_SIZE; i++) {
+		buffer[i] = 10000 * sinf(2 * M_PI * 400 * ((float)i / sampleRate));
 	    }*/                                                                     //Генерация синусоиды
 
         /*for (int i = 0; i < BUFFER_SIZE; i++) {
             printf("%02x", buffer[i]);
             if (((i + 1) % 16) == 0)
                 printf("\n");
-        }                                           //Отладка
-    */
+        }*/                                           //Отладка
+    
         // Передаем данные по сети
         //ssize_t bytes_sent = send(sockfd, buffer, frames * channels * 2, 0);
-        ssize_t bytes_sent = send(sockfd, buffer,BUFFER_SIZE / (channels * 2), 0);  //Если синусоида, то просто BUFFER_SIZE
+        ssize_t bytes_sent = send(sockfd, buffer, BUFFER_SIZE, 0);  //Если синусоида, то просто BUFFER_SIZE
         if (bytes_sent < 0) {
             perror("Send error");
             break;
         }
-        dataCapacity += BUFFER_SIZE;
+        dataCapacity += bytes_sent;
         printf("\ndataCapacity: %ld\n\n", dataCapacity);
         
     }

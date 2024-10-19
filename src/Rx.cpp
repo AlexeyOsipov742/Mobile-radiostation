@@ -29,7 +29,7 @@ char *find_ttyUSB_port() {
     return port;
 }
 
-void Rx(short * buffer) {
+void Rx(unsigned char * buffer) {
     int fd;
     struct termios options;
     
