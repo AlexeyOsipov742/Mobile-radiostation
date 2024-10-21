@@ -1,4 +1,5 @@
 #include "TxRx.h"
+#include <cstdlib>
 
 void audioRxEth(unsigned char *buffer) {
     //Параметры для захвата звука
@@ -121,7 +122,7 @@ void audioRxEth(unsigned char *buffer) {
         return;
     }
 
-    /*if (snd_pcm_hw_params_set_period_size(playback_handle, hw_params, local_periods, 0) < 0) {
+    /*if (snd_pcm_hw_params_set_period_size_near(playback_handle, hw_params, &local_periods, 0) < 0) {
         perror("Cannot set period size near");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(playback_handle);
@@ -151,10 +152,12 @@ void audioRxEth(unsigned char *buffer) {
         snd_pcm_close(playback_handle);
         close(sockfd);
         return;
-    }
+    }   
 
+    system("gpio -g mode 20 out");
+    system("gpio -g write 20 1");
     // Основной цикл для приёма и воспроизведения звуковых данных
-    while (1) {
+    for (int j; j < 1024*32; j++) {
         int n = recv(newsockfd, buffer, BUFFER_SIZE, 0);
         if (n <= 0) {
             if (n == 0) {
@@ -184,6 +187,7 @@ void audioRxEth(unsigned char *buffer) {
     }
 
     // Освобождаем ресурсы
+    system("gpio -g write 20 0");
     snd_pcm_drop(playback_handle);
     snd_pcm_close(playback_handle);
     close(newsockfd);

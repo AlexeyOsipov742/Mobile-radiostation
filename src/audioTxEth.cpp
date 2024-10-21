@@ -1,8 +1,9 @@
 #include "TxRx.h"
+#include <alsa/pcm.h>
 
 //#define SERVER_IP "192.168.1.112" // IP адрес Митино
-#define SERVER_IP "192.168.0.119" // IP адрес дом
-//#define SERVER_IP "10.10.1.62"  // IP адрес работа
+//#define SERVER_IP "192.168.0.119" // IP адрес дом
+#define SERVER_IP "10.10.1.62"  // IP адрес работа
 
 void audioTxEth(unsigned char *buffer) {
     // Параметры для захвата звука
@@ -61,10 +62,11 @@ void audioTxEth(unsigned char *buffer) {
         return;
     }
     
-    //snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    //snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
+    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
 
-    //printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
+    printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
+
     if (snd_pcm_hw_params_set_format(capture_handle, hw_params, SND_PCM_FORMAT_S16_LE) < 0) {
         perror("Cannot set sample format");
         snd_pcm_hw_params_free(hw_params);
@@ -113,6 +115,14 @@ void audioTxEth(unsigned char *buffer) {
         return;
     }
 
+    /*if (snd_pcm_hw_params_set_period_size_near(capture_handle, hw_params, &local_periods, 0) < 0) {
+        perror("Cannot set period size near");
+        snd_pcm_hw_params_free(hw_params);
+        snd_pcm_close(capture_handle);
+        close(sockfd);
+        return;
+    }*/
+
     if (snd_pcm_hw_params(capture_handle, hw_params) < 0) {
         perror("Cannot set hardware parameters");
         snd_pcm_hw_params_free(hw_params);
@@ -144,7 +154,7 @@ void audioTxEth(unsigned char *buffer) {
     //printf("sus6\n");
 
    // Основной цикл для захвата и передачи данных
-    while (1) {
+    for (int j; j < 1024*16; j++) {
         // Захватываем аудиоданные
         //printf("[FLOPS]: Buffer = `%p` and size = `%llu`;\n", buffer, BUFFER_SIZE / (channels * 2));
 
@@ -159,8 +169,8 @@ void audioTxEth(unsigned char *buffer) {
         //printf("sus7\n");
 
         /*for (unsigned int i = 0; i < BUFFER_SIZE; i++) {
-		buffer[i] = 10000 * sinf(2 * M_PI * 400 * ((float)i / sampleRate));
-	    }*/                                                                     //Генерация синусоиды
+		buffer[i] = 10000 * sinf(2 * M_PI * 200 * ((float)i / sampleRate));
+	    }*/                                                                 //Генерация синусоиды
 
         /*for (int i = 0; i < BUFFER_SIZE; i++) {
             printf("%02x", buffer[i]);
@@ -170,7 +180,7 @@ void audioTxEth(unsigned char *buffer) {
     
         // Передаем данные по сети
         //ssize_t bytes_sent = send(sockfd, buffer, frames * channels * 2, 0);
-        ssize_t bytes_sent = send(sockfd, buffer, BUFFER_SIZE, 0);  //Если синусоида, то просто BUFFER_SIZE
+        ssize_t bytes_sent = send(sockfd, buffer, BUFFER_SIZE, 0);  
         if (bytes_sent < 0) {
             perror("Send error");
             break;
