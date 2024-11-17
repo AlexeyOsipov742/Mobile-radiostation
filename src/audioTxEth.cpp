@@ -2,8 +2,8 @@
 #include <alsa/pcm.h>
 
 //#define SERVER_IP "192.168.1.112" // IP адрес Митино
-//#define SERVER_IP "192.168.0.119" // IP адрес дом
-#define SERVER_IP "10.10.1.62"  // IP адрес работа
+#define SERVER_IP "192.168.0.119" // IP адрес дом
+//#define SERVER_IP "10.10.1.62"  // IP адрес работа
 
 void audioTxEth(unsigned char *buffer) {
     // Параметры для захвата звука
@@ -28,22 +28,19 @@ void audioTxEth(unsigned char *buffer) {
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(PORT);
-    //serv_addr.sin_addr.s_addr = inet_addr("SERVER_IP"); // IP работа
-    serv_addr.sin_addr.s_addr = inet_addr(SERVER_IP); // IP дом
+    serv_addr.sin_addr.s_addr = inet_addr(SERVER_IP); // IP
 
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("Connection failed");
     }
 
-    //printf("sus1\n");
     // Открываем PCM устройство
-    if (snd_pcm_open(&capture_handle, "plughw:0,6", SND_PCM_STREAM_CAPTURE, 0) < 0) {
+    if (snd_pcm_open(&capture_handle, "hw:0,6", SND_PCM_STREAM_CAPTURE, 0) < 0) {
         perror("Cannot open audio device");
         close(sockfd);
         return;
     }
 
-    //printf("sus2\n");
     // Выделение памяти для hw_params с использованием malloc
     if (snd_pcm_hw_params_malloc(&hw_params) < 0) {
         perror("Cannot allocate hardware parameters");
@@ -51,8 +48,6 @@ void audioTxEth(unsigned char *buffer) {
         close(sockfd);
         return;
     }
-
-    //printf("sus3\n");
 
     if (snd_pcm_hw_params_any(capture_handle, hw_params) < 0) {
         perror("Cannot configure this PCM device");
@@ -115,13 +110,13 @@ void audioTxEth(unsigned char *buffer) {
         return;
     }
 
-    /*if (snd_pcm_hw_params_set_period_size_near(capture_handle, hw_params, &local_periods, 0) < 0) {
+    if (snd_pcm_hw_params_set_period_size_near(capture_handle, hw_params, &local_periods, 0) < 0) {
         perror("Cannot set period size near");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(capture_handle);
         close(sockfd);
         return;
-    }*/
+    }
 
     if (snd_pcm_hw_params(capture_handle, hw_params) < 0) {
         perror("Cannot set hardware parameters");
@@ -131,15 +126,13 @@ void audioTxEth(unsigned char *buffer) {
         return;
     }
 
-    //printf("sus4\n");
 
     // Освобождение выделенной памяти
     snd_pcm_hw_params_free(hw_params);
 
-    //printf("sus5\n");
 
-    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+    //snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
+    //snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
 
     printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
 
@@ -151,14 +144,14 @@ void audioTxEth(unsigned char *buffer) {
         return;
     }
 
-    //printf("sus6\n");
 
    // Основной цикл для захвата и передачи данных
-    for (int j; j < 1024*16; j++) {
+    for (int j = 0; j < 1024*16; j++) {
         // Захватываем аудиоданные
         //printf("[FLOPS]: Buffer = `%p` and size = `%llu`;\n", buffer, BUFFER_SIZE / (channels * 2));
 
         int frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE / (channels * 2));
+        //system("gpio readall > gpio.txt");
         //printf("sus6.5\n");
         if (frames < 0) {
             fprintf(stderr, "Read error: %s\n", snd_strerror(frames));  // Выводим точную ошибку ALSA
@@ -166,7 +159,6 @@ void audioTxEth(unsigned char *buffer) {
             continue;
         }
 
-        //printf("sus7\n");
 
         /*for (unsigned int i = 0; i < BUFFER_SIZE; i++) {
 		buffer[i] = 10000 * sinf(2 * M_PI * 200 * ((float)i / sampleRate));
@@ -186,8 +178,7 @@ void audioTxEth(unsigned char *buffer) {
             break;
         }
         dataCapacity += bytes_sent;
-        printf("\ndataCapacity: %ld\n\n", dataCapacity);
-        
+        //printf("\ndataCapacity: %ld\n\n", dataCapacity);
     }
 
     snd_pcm_drop(capture_handle);

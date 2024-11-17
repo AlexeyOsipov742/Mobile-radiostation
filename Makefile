@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -O0 -g -Wall 
+CXXFLAGS = -O2 -g -Wall 
 DEBUG_FLAGS = -D _DEBUG -D _SHOW_STACK_TRACE -ggdb3 -std=c++17 -O0 -Wall -g
 files = Rx.cpp Tx.cpp RxEth.cpp TxEth.cpp main.cpp audioRxEth.cpp audioTxEth.cpp
 headers = TxRx.h

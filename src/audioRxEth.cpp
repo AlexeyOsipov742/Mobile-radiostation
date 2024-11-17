@@ -28,7 +28,7 @@ void audioRxEth(unsigned char *buffer) {
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
     memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_family = AF_INET; 
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(PORT);
 
@@ -46,7 +46,7 @@ void audioRxEth(unsigned char *buffer) {
     }
 
     // Открываем PCM устройство
-    if (snd_pcm_open(&playback_handle, "plughw:0,0", SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK) < 0) {
+    if (snd_pcm_open(&playback_handle, "hw:0,0", SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK) < 0) {
         perror("Cannot open audio device");
         close(sockfd);
         return;
@@ -141,8 +141,8 @@ void audioRxEth(unsigned char *buffer) {
     // Освобождение выделенной памяти
     snd_pcm_hw_params_free(hw_params);
 
-    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+    //snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
+    //snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
 
     printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
 
@@ -156,6 +156,7 @@ void audioRxEth(unsigned char *buffer) {
 
     system("gpio -g mode 20 out");
     system("gpio -g write 20 1");
+
     // Основной цикл для приёма и воспроизведения звуковых данных
     for (int j; j < 1024*32; j++) {
         int n = recv(newsockfd, buffer, BUFFER_SIZE, 0);
@@ -172,8 +173,7 @@ void audioRxEth(unsigned char *buffer) {
             printf("%02x", buffer[i]);
             if (((i + 1) % 16) == 0)
                 printf("\n");
-        }*/                                           //Отладка
-
+        }*/                                           //Отладка 
         int err = 0;    
         int frames = n / (channels * 2);
         // Воспроизводим данные с помощью ALSA
