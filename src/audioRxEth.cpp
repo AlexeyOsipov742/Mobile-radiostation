@@ -50,7 +50,7 @@ void audioRxEth(unsigned char *buffer) {
     }
 
     // Открываем PCM устройство
-    if (snd_pcm_open(&playback_handle, "hw:0,0", SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK) < 0) {
+    if (snd_pcm_open(&playback_handle, "hw:0,0", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
         perror("Cannot open audio device");
         close(sockfd);
         return;
