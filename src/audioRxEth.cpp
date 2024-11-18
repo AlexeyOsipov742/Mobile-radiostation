@@ -1,10 +1,14 @@
 #include "TxRx.h"
+#include <alsa/pcm.h>
+#include <cerrno>
 #include <cstdlib>
 
 void audioRxEth(unsigned char *buffer) {
     //Параметры для захвата звука
     snd_pcm_t *playback_handle;
     snd_pcm_hw_params_t *hw_params;
+    //snd_pcm_sw_params_t *sw_params;
+    //snd_async_handler_t *pcm_callback;
 
     // Создание сокета для передачи данных
     int sockfd, newsockfd;
@@ -17,7 +21,7 @@ void audioRxEth(unsigned char *buffer) {
     snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
     snd_pcm_uframes_t local_periods = PERIODS;
     socklen_t clilen;
-    
+
     // Настройка сокета
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket creation error");
@@ -62,7 +66,7 @@ void audioRxEth(unsigned char *buffer) {
 
 
     if (snd_pcm_hw_params_any(playback_handle, hw_params) < 0) {
-        perror("Cannot configure this PCM device");
+        perror("Cannot configure hardware parameters on this PCM device");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(playback_handle);
         close(sockfd);
@@ -122,13 +126,13 @@ void audioRxEth(unsigned char *buffer) {
         return;
     }
 
-    /*if (snd_pcm_hw_params_set_period_size_near(playback_handle, hw_params, &local_periods, 0) < 0) {
+    if (snd_pcm_hw_params_set_period_size_near(playback_handle, hw_params, &local_periods, 0) < 0) {
         perror("Cannot set period size near");
         snd_pcm_hw_params_free(hw_params);
         snd_pcm_close(playback_handle);
         close(sockfd);
         return;
-    }*/
+    }
 
     if (snd_pcm_hw_params(playback_handle, hw_params) < 0) {
         perror("Cannot set hardware parameters");
@@ -146,19 +150,73 @@ void audioRxEth(unsigned char *buffer) {
 
     printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
 
+    /*if (snd_pcm_sw_params_malloc(&sw_params) < 0) {
+        perror("Cannot allocate software parameters");
+        snd_pcm_close(playback_handle);
+        close(sockfd);
+        return;
+    }
+
+    if (snd_pcm_sw_params_current (playback_handle, sw_params) < 0) {
+        perror("Cannot configure software parameters on this PCM device");
+        snd_pcm_close(playback_handle);
+        close(sockfd);
+        return;
+    }
+
+    if (snd_pcm_sw_params_set_start_threshold(playback_handle, sw_params, local_buffer/2) < 0) {
+        perror("Cannot set start threshold");
+        snd_pcm_close(playback_handle);
+        close(sockfd);
+        return;
+    }
+
+    if (snd_pcm_sw_params_set_avail_min(playback_handle, sw_params, local_periods) < 0) {
+        perror("Cannot set avail min");
+        snd_pcm_close(playback_handle);
+        close(sockfd);
+        return;
+    }
+
+    if (snd_pcm_sw_params(playback_handle, sw_params) < 0) {
+            perror("Cannot set software parameters");
+            snd_pcm_hw_params_free(hw_params);
+            snd_pcm_close(playback_handle);
+            close(sockfd);
+            return;
+    }
+
+    snd_pcm_sw_params_free (sw_params);
+    */
     // Подготовка устройства к воспроизведению
+
+    /*if (snd_async_add_pcm_handler(&pcm_callback, playback_handle, MyCallback, NULL) < 0) {
+            perror("Cannot add async handler");
+            snd_pcm_close(playback_handle);
+            close(sockfd);
+            return;
+    }
+    
+    if (snd_pcm_nonblock(playback_handle, 1) < 0) {
+        perror("Cannot set non-blocking mode");
+        snd_pcm_close(playback_handle);
+        return;
+    }
+
     if (snd_pcm_prepare(playback_handle) < 0) {
         perror("Cannot prepare audio interface for use");
         snd_pcm_close(playback_handle);
         close(sockfd);
         return;
-    }   
+    }
+    
+    */
 
     system("gpio -g mode 20 out");
     system("gpio -g write 20 1");
 
     // Основной цикл для приёма и воспроизведения звуковых данных
-    for (int j; j < 1024*32; j++) {
+    for (int j = 0; j < 1024*32; j++) {
         int n = recv(newsockfd, buffer, BUFFER_SIZE, 0);
         if (n <= 0) {
             if (n == 0) {
@@ -174,16 +232,24 @@ void audioRxEth(unsigned char *buffer) {
             if (((i + 1) % 16) == 0)
                 printf("\n");
         }*/                                           //Отладка 
+
         int err = 0;    
         int frames = n / (channels * 2);
+        err = snd_pcm_writei(playback_handle, buffer, frames);
         // Воспроизводим данные с помощью ALSA
-        if (snd_pcm_writei(playback_handle, buffer, frames) < 0) {
-            fprintf(stderr, "ALSA write error: %s\n", snd_strerror(err));
-            snd_pcm_prepare(playback_handle);  // Восстанавливаем поток в случае ошибки
+        if (err < 0) {
+            if (err == EPIPE){
+                fprintf(stderr, "Temporary underrun, retrying...\n"); //Обработка, если установлен флаг SND_PCM_NONBLOCK
+                snd_pcm_prepare(playback_handle);
+            }
+            if (err == EAGAIN){
+                fprintf(stderr, "Temporary unavailable, retrying...\n"); 
+                continue;
+            }
         }
         dataCapacity += n;
-
-        printf("\ndataCapacity: %ld\n\n", dataCapacity);
+        
+        //printf("\ndataCapacity: %ld\n\n", dataCapacity);
     }
 
     // Освобождаем ресурсы

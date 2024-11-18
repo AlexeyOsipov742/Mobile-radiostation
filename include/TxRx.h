@@ -34,6 +34,6 @@ void TxEth(unsigned char * buffer);
 void audioRxEth(unsigned char * buffer);
 void audioTxEth(unsigned char * buffer);
 char * find_ttyUSB_port();
-
+void MyCallback(snd_async_handler_t *pcm_callback);
 
 
