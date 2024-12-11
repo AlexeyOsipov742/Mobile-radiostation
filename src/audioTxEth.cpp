@@ -1,9 +1,12 @@
 #include "TxRx.h"
 #include <alsa/pcm.h>
+#include <wiringPi.h>
 
 //#define SERVER_IP "192.168.1.112" // IP адрес Митино
-#define SERVER_IP "192.168.0.119" // IP адрес дом
+//#define SERVER_IP "192.168.0.119" // IP адрес дом
 //#define SERVER_IP "10.10.1.62"  // IP адрес работа
+//#define SERVER_IP "192.168.0.109" // IP адрес ноут общага
+#define SERVER_IP "10.10.1.217" // IP адрес ноут работа
 
 void audioTxEth(unsigned char *buffer) {
     // Параметры для захвата звука
@@ -17,10 +20,9 @@ void audioTxEth(unsigned char *buffer) {
     unsigned int resample = 1;
     unsigned int sampleRate = 44100;
     long int dataCapacity = 0;
-    int channels = 2;
+    int channels = 1;
     snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
     snd_pcm_uframes_t local_periods = PERIODS;
-    
     
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket creation error");
@@ -34,8 +36,24 @@ void audioTxEth(unsigned char *buffer) {
         perror("Connection failed");
     }
 
+    if (wiringPiSetupGpio() == -1) {
+        perror("GPIO setup failed");
+        return;
+    }
+
+    int gpio_pin = 19; // GPIO номер для 37 пина на плате
+    pinMode(gpio_pin, INPUT); // Настройка пина как вход
+    pullUpDnControl(gpio_pin, PUD_DOWN); // Подтяжка к "земле" для стабильности
+
+    // Ждём сигнала на пине
+    printf("Ожидание сигнала на GPIO %d...\n", gpio_pin);
+    while (digitalRead(gpio_pin) == LOW) {
+        delay(100); // Проверяем каждые 100 мс
+    }
+    printf("Сигнал обнаружен, запускаем программу\n");
+
     // Открываем PCM устройство
-    if (snd_pcm_open(&capture_handle, "hw:0,6", SND_PCM_STREAM_CAPTURE, 0) < 0) {
+    if (snd_pcm_open(&capture_handle, "hw:1,0", SND_PCM_STREAM_CAPTURE, 0) < 0) {
         perror("Cannot open audio device");
         close(sockfd);
         return;
@@ -146,10 +164,9 @@ void audioTxEth(unsigned char *buffer) {
 
 
    // Основной цикл для захвата и передачи данных
-    for (int j = 0; j < 1024*16; j++) {
+    for (int j = 0; j < 1024*32; j++) {
         // Захватываем аудиоданные
-        //printf("[FLOPS]: Buffer = `%p` and size = `%llu`;\n", buffer, BUFFER_SIZE / (channels * 2));
-
+        //printf("j = %d\n", j);        
         int frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE / (channels * 2));
         //system("gpio readall > gpio.txt");
         //printf("sus6.5\n");
@@ -158,20 +175,14 @@ void audioTxEth(unsigned char *buffer) {
             snd_pcm_prepare(capture_handle);  // Попробуем восстановить поток
             continue;
         }
-
-
-        /*for (unsigned int i = 0; i < BUFFER_SIZE; i++) {
-		buffer[i] = 10000 * sinf(2 * M_PI * 200 * ((float)i / sampleRate));
-	    }*/                                                                 //Генерация синусоиды
-
-        /*for (int i = 0; i < BUFFER_SIZE; i++) {
-            printf("%02x", buffer[i]);
-            if (((i + 1) % 16) == 0)
+        
+        /*for (int k = 0; k < BUFFER_SIZE; k++) {
+            printf("%02x", buffer[k]);
+            if (((k + 1) % 16) == 0)
                 printf("\n");
         }*/                                           //Отладка
     
         // Передаем данные по сети
-        //ssize_t bytes_sent = send(sockfd, buffer, frames * channels * 2, 0);
         ssize_t bytes_sent = send(sockfd, buffer, BUFFER_SIZE, 0);  
         if (bytes_sent < 0) {
             perror("Send error");

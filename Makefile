@@ -7,7 +7,7 @@ objects = $(files:.cpp=.o)
 
 buildDir = build
 srcDir = src
-LIBS = -lasound
+LIBS = -lasound -lwiringPi
 
 .PHONY: all clean prepare
 all: prepare main
