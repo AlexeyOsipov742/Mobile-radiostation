@@ -22,7 +22,7 @@
 #include <alsa/pcm.h>
 
 #define DEV_DIR "/dev"
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 65536
 #define PERIODS 512;
 #define TTY "ttyAMA"
 #define PORT 5678

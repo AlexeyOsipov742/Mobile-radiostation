@@ -218,6 +218,10 @@ void audioRxEth(unsigned char *buffer) {
         system("gpio -g mode 20 out");
         system("gpio -g write 20 1");
 
+        if (snd_pcm_prepare(playback_handle) < 0) {
+            printf("Error preparing\n");
+        } 
+        
         // Основной цикл для приёма и воспроизведения звуковых данных
         while (true) {
             int n = recv(newsockfd, buffer, BUFFER_SIZE, 0);
@@ -226,11 +230,13 @@ void audioRxEth(unsigned char *buffer) {
                     printf("Connection closed by client\n");
                     close(newsockfd);
                     system("gpio -g write 20 0");
+                    memset(buffer, 0, BUFFER_SIZE);
                     break;
                 } else {
                     perror("Receive error");
                     close(newsockfd);
                     system("gpio -g write 20 0");
+                    memset(buffer, 0, BUFFER_SIZE);
                 }
                 break;
             }
