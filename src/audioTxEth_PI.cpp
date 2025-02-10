@@ -1,14 +1,15 @@
 #include "TxRx.h"
 #include <alsa/pcm.h>
+#include <cstdio>
 #include <wiringPi.h>
 
 //#define SERVER_IP "192.168.1.112" // IP адрес Митино
 //#define SERVER_IP "192.168.0.119" // IP адрес дом
 //#define SERVER_IP "10.10.1.62"  // IP адрес работа
-//#define SERVER_IP "192.168.0.109" // IP адрес ноут общага
-#define SERVER_IP "10.10.1.217" // IP адрес ноут работа
+#define SERVER_IP "192.168.0.110" // IP адрес ноут общага
+//#define SERVER_IP "10.10.1.217" // IP адрес ноут работа
 
-void audioTxEth(unsigned char *buffer) {
+void audioTxEth_PI(unsigned char *buffer) {
     // Параметры для захвата звука
     snd_pcm_t *capture_handle;
     snd_pcm_hw_params_t *hw_params;
@@ -18,7 +19,7 @@ void audioTxEth(unsigned char *buffer) {
     struct sockaddr_in serv_addr;
 
     unsigned int resample = 1;
-    unsigned int sampleRate = 44100;
+    unsigned int sampleRate = SAMPLERATE;
     long int dataCapacity = 0;
     int channels = 1;
     snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
@@ -26,7 +27,11 @@ void audioTxEth(unsigned char *buffer) {
     
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket creation error");
+        return;
     }
+
+    //int optval = 1;
+    //setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(PORT);
@@ -34,10 +39,13 @@ void audioTxEth(unsigned char *buffer) {
 
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("Connection failed");
+        close(sockfd);
+        return;
     }
 
     if (wiringPiSetupGpio() == -1) {
         perror("GPIO setup failed");
+        close(sockfd);
         return;
     }
 
@@ -159,20 +167,23 @@ void audioTxEth(unsigned char *buffer) {
         perror("Cannot prepare audio interface for use");
         snd_pcm_close(capture_handle);
         close(sockfd);
+        memset(buffer, 0, BUFFER_SIZE);
         return;
     }
 
 
    // Основной цикл для захвата и передачи данных
-    for (int j = 0; j < 1024*32; j++) {
+    while (digitalRead(gpio_pin) == HIGH) {
+    //while(1) {
         // Захватываем аудиоданные
-        //printf("j = %d\n", j);        
+        //printf("j = %d\n", j);
         int frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE / (channels * 2));
         //system("gpio readall > gpio.txt");
         //printf("sus6.5\n");
         if (frames < 0) {
             fprintf(stderr, "Read error: %s\n", snd_strerror(frames));  // Выводим точную ошибку ALSA
             snd_pcm_prepare(capture_handle);  // Попробуем восстановить поток
+            memset(buffer, 0, BUFFER_SIZE);
             continue;
         }
         
@@ -181,18 +192,33 @@ void audioTxEth(unsigned char *buffer) {
             if (((k + 1) % 16) == 0)
                 printf("\n");
         }*/                                           //Отладка
-    
+        
+        /*snd_pcm_uframes_t avail = snd_pcm_avail_update(capture_handle);
+        if (avail < local_periods) {
+            // Если в буфере слишком мало данных, ждем
+            usleep(1000);  // 1 миллисекунда задержки
+            continue;
+        }*/
+
+        /*printf("BUFFER: [");
+        for (int i = 0; i < BUFFER_SIZE; i++)
+            putchar(buffer[i]);
+        printf("]\n");
+        */
         // Передаем данные по сети
         ssize_t bytes_sent = send(sockfd, buffer, BUFFER_SIZE, 0);  
         if (bytes_sent < 0) {
             perror("Send error");
+            close(sockfd);
+            memset(buffer, 0, BUFFER_SIZE);
             break;
         }
         dataCapacity += bytes_sent;
-        //printf("\ndataCapacity: %ld\n\n", dataCapacity);
+        printf("\ndataCapacity: %ld\n\n", dataCapacity);
     }
 
     snd_pcm_drop(capture_handle);
     snd_pcm_close(capture_handle);
     close(sockfd);
+    memset(buffer, 0, BUFFER_SIZE);
 }
