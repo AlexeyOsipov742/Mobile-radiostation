@@ -54,12 +54,12 @@ void audioTxEth_PI(unsigned char *buffer) {
     pullUpDnControl(gpio_pin, PUD_DOWN); // Подтяжка к "земле" для стабильности
 
     // Ждём сигнала на пине
-    printf("Ожидание сигнала на GPIO %d...\n", gpio_pin);
+    /*printf("Ожидание сигнала на GPIO %d...\n", gpio_pin);
     while (digitalRead(gpio_pin) == LOW) {
         delay(100); // Проверяем каждые 100 мс
     }
     printf("Сигнал обнаружен, запускаем программу\n");
-
+    */
     // Открываем PCM устройство
     if (snd_pcm_open(&capture_handle, "hw:1,0", SND_PCM_STREAM_CAPTURE, 0) < 0) {
         perror("Cannot open audio device");

@@ -1,6 +1,7 @@
 #include "TxRx.h"
 #include <alsa/pcm.h>
 #include <cerrno>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 
@@ -22,6 +23,7 @@ void audioRxEth_client(unsigned char *buffer) {
     snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
     snd_pcm_uframes_t local_periods = PERIODS;
     socklen_t clilen;
+    snd_pcm_state_t state;
 
     // Настройка сокета
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -262,24 +264,44 @@ void audioRxEth_client(unsigned char *buffer) {
             int err = 0;
             //snd_pcm_uframes_t avail;
             int frames = n / (channels * 2);
+
             //avail = snd_pcm_avail_update(playback_handle);
             //if (avail < frames) {
             //    usleep(1000);
             //} else {
-                err = snd_pcm_writei(playback_handle, buffer, frames);
-                // Воспроизводим данные с помощью ALSA
-                if (err < 0) {
-                    if (err == EPIPE){
-                        fprintf(stderr, "Temporary underrun, retrying...\n"); //Обработка, если установлен флаг SND_PCM_NONBLOCK
-                        snd_pcm_recover(playback_handle, err, 0);
-                        continue;
-                    }
-                    if (err == EAGAIN){
-                        fprintf(stderr, "Temporary unavailable, retrying...\n"); 
-                        continue;
-                    }
+
+            /*int nulls = 0;
+            for (size_t i = 0; i < BUFFER_SIZE; i++) {
+                if (buffer[i] == 0) {
+                    nulls += 1;
                 }
-                dataCapacity += n;
+            }
+            if (nulls > 512) {
+                printf("Received silent buffer, resetting ALSA...\n");
+                snd_pcm_drop(playback_handle);
+                snd_pcm_prepare(playback_handle);
+            }*/
+            
+            state = snd_pcm_state(playback_handle);
+            if (state == SND_PCM_STATE_XRUN) {
+                snd_pcm_prepare(playback_handle);
+            }
+            //printf("Текущее состояние PCM-устройства: %s\n", snd_pcm_state_name(state));
+                
+            err = snd_pcm_writei(playback_handle, buffer, frames);
+                // Воспроизводим данные с помощью ALSA
+            if (err < 0) {
+                if (err == EPIPE){
+                    fprintf(stderr, "Temporary underrun, retrying...\n"); //Обработка, если установлен флаг SND_PCM_NONBLOCK
+                    snd_pcm_recover(playback_handle, err, 0);
+                    continue;
+                }
+                if (err == EAGAIN){
+                    fprintf(stderr, "Temporary unavailable, retrying...\n"); 
+                    continue;
+                }
+            }
+            dataCapacity += n;
                 
                 //printf("\ndataCapacity: %ld\n\n", dataCapacity);
             //}
