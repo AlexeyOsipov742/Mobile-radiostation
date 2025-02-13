@@ -43,12 +43,8 @@ void audioRxEth_PI(unsigned char *buffer) {
     pullUpDnControl(gpio_pin, PUD_DOWN); // Подтяжка к "земле" для стабильности
 
     fd_set readfds;          // Множество файловых дескрипторов для чтения
-    FD_ZERO(&readfds);        // Очищаем множество
-    FD_SET(sockfd, &readfds);   // Добавляем слушающий сокет
 
     struct timeval timeout;  // Структура для указания времени ожидания
-    timeout.tv_sec = 0;       // Не ждем
-    timeout.tv_usec = 0;      // Не ждем
 
     // Открываем PCM устройство
     if (snd_pcm_open(&playback_handle, "hw:1,0", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
@@ -191,6 +187,13 @@ void audioRxEth_PI(unsigned char *buffer) {
     */
 
     while (1) {
+
+        FD_ZERO(&readfds);        // Очищаем множество
+        FD_SET(sockfd, &readfds);   // Добавляем слушающий сокет
+
+        timeout.tv_sec = 0;       // Не ждем
+        timeout.tv_usec = 100000;      // Не ждем
+
         int select_result = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 
         if (select_result == -1) {
