@@ -24,8 +24,8 @@
 
 
 #define DEV_DIR "/dev"
-#define BUFFER_SIZE 4194304
-#define PERIODS 131072
+#define BUFFER_SIZE 2048
+#define PERIODS 1024
 #define TTY "ttyAMA"
 #define PORT 5678
 #define CHANNELS 2

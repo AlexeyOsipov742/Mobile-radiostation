@@ -192,7 +192,7 @@ void audioRxEth_PI(unsigned char *buffer) {
         FD_SET(sockfd, &readfds);   // Добавляем слушающий сокет
 
         timeout.tv_sec = 0;       // Не ждем
-        timeout.tv_usec = 100000;      // Не ждем
+        timeout.tv_usec = 0;      // Не ждем
 
         int select_result = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 
