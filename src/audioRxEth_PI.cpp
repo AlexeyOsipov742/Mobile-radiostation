@@ -40,7 +40,7 @@ void audioRxEth_PI(unsigned char *buffer) {
     
     int gpio_pin = 19; // GPIO номер для 37 пина на плате
     pinMode(gpio_pin, INPUT); // Настройка пина как вход
-    pullUpDnControl(gpio_pin, PUD_DOWN); // Подтяжка к "земле" для стабильности
+    pullUpDnControl(gpio_pin, PUD_UP); // Подтяжка к "земле" для стабильности
 
     fd_set readfds;          // Множество файловых дескрипторов для чтения
 
@@ -255,7 +255,7 @@ void audioRxEth_PI(unsigned char *buffer) {
                 //printf("\ndataCapacity: %ld\n\n", dataCapacity);
             }
         } else {
-            if (digitalRead(gpio_pin) == HIGH) {
+            if (digitalRead(gpio_pin) == LOW) {
                 break;
             }
         }

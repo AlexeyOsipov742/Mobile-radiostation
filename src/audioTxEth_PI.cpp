@@ -51,7 +51,7 @@ void audioTxEth_PI(unsigned char *buffer) {
 
     int gpio_pin = 19; // GPIO номер для 37 пина на плате
     pinMode(gpio_pin, INPUT); // Настройка пина как вход
-    pullUpDnControl(gpio_pin, PUD_DOWN); // Подтяжка к "земле" для стабильности
+    pullUpDnControl(gpio_pin, PUD_UP); // Подтяжка к "земле" для стабильности
 
     // Ждём сигнала на пине
     /*printf("Ожидание сигнала на GPIO %d...\n", gpio_pin);
@@ -173,7 +173,7 @@ void audioTxEth_PI(unsigned char *buffer) {
 
 
    // Основной цикл для захвата и передачи данных
-    while (digitalRead(gpio_pin) == HIGH) {
+    while (digitalRead(gpio_pin) == LOW) {
     //while(1) {
         // Захватываем аудиоданные
         //printf("j = %d\n", j);
