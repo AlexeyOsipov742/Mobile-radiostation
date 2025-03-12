@@ -10,6 +10,7 @@ void audioRxEth_PI(unsigned char *buffer) {
     //snd_pcm_sw_params_t *sw_params;
     //snd_async_handler_t *pcm_callback;
     // Создание сокета для передачи данных
+    const char buttons[] = {'K', 'N'};
     int sockfd, newsockfd;
     struct sockaddr_in serv_addr, cli_addr;
     unsigned int resample = 1;
@@ -205,54 +206,64 @@ void audioRxEth_PI(unsigned char *buffer) {
             perror("Accept error");
             continue;
             }
-            printf("Client connected\n");
-            system("gpio -g mode 20 out");
-            system("gpio -g write 20 1");
+            int first_data = recv(newsockfd, buffer, BUFFER_SIZE, 0);
+            if ( (buffer[0] == buttons[0])  &&  (buffer[1] == buttons[1])) {
+                memmove(buffer, buffer + 2, BUFFER_SIZE - 2);
+                Tx(buffer);
+                //usleep(10000);
+                //Rx(buffer);
+                TxEth(buffer);
+                memset(buffer, 0, BUFFER_SIZE);
+            } else {
+                printf("Client connected\n");
+                system("gpio -g mode 20 out");
+                system("gpio -g write 20 1");
 
-            if (snd_pcm_prepare(playback_handle) < 0) {
-                printf("Error preparing\n");
-            } 
+                if (snd_pcm_prepare(playback_handle) < 0) {
+                    printf("Error preparing\n");
+                } 
 
-            // Основной цикл для приёма и воспроизведения звуковых данных
-            while (1) {
-                int n = recv(newsockfd, buffer, BUFFER_SIZE, 0);
-                if (n <= 0) {
-                    if (n == 0) {
-                        printf("Connection closed by client\n");
-                        close(newsockfd);
-                        system("gpio -g write 20 0");
-                        memset(buffer, 0, BUFFER_SIZE);
+                // Основной цикл для приёма и воспроизведения звуковых данных
+                while (1) {
+                    int n = recv(newsockfd, buffer, BUFFER_SIZE, 0);
+                    if (n <= 0) {
+                        if (n == 0) {
+                            printf("Connection closed by client\n");
+                            close(newsockfd);
+                            system("gpio -g write 20 0");
+                            memset(buffer, 0, BUFFER_SIZE);
+                            break;
+                        } else {
+                            perror("Receive error");
+                            close(newsockfd);
+                            system("gpio -g write 20 0");
+                            memset(buffer, 0, BUFFER_SIZE);
+                        }
                         break;
-                    } else {
-                        perror("Receive error");
-                        close(newsockfd);
-                        system("gpio -g write 20 0");
-                        memset(buffer, 0, BUFFER_SIZE);
                     }
-                    break;
+                    /*for (int i = 0; i < BUFFER_SIZE; i++) {
+                        printf("%02x", buffer[i]);
+                        if (((i + 1) % 16) == 0)
+                            printf("\n");
+                    }*/                                           //Отладка 
+                    int err = 0;    
+                    int frames = n / (channels * 2);
+                    err = snd_pcm_writei(playback_handle, buffer, frames);
+                    // Воспроизводим данные с помощью ALSA
+                    if (err < 0) {
+                        if (err == EPIPE){
+                            fprintf(stderr, "Temporary underrun, retrying...\n"); //Обработка, если установлен флаг SND_PCM_NONBLOCK
+                            snd_pcm_prepare(playback_handle);
+                        }
+                        if (err == EAGAIN){
+                            fprintf(stderr, "Temporary unavailable, retrying...\n"); 
+                            continue;
+                        }
+                    }
+                    dataCapacity += n;
+                    
+                    //printf("\ndataCapacity: %ld\n\n", dataCapacity);
                 }
-                /*for (int i = 0; i < BUFFER_SIZE; i++) {
-                    printf("%02x", buffer[i]);
-                    if (((i + 1) % 16) == 0)
-                        printf("\n");
-                }*/                                           //Отладка 
-                int err = 0;    
-                int frames = n / (channels * 2);
-                err = snd_pcm_writei(playback_handle, buffer, frames);
-                // Воспроизводим данные с помощью ALSA
-                if (err < 0) {
-                    if (err == EPIPE){
-                        fprintf(stderr, "Temporary underrun, retrying...\n"); //Обработка, если установлен флаг SND_PCM_NONBLOCK
-                        snd_pcm_prepare(playback_handle);
-                    }
-                    if (err == EAGAIN){
-                        fprintf(stderr, "Temporary unavailable, retrying...\n"); 
-                        continue;
-                    }
-                }
-                dataCapacity += n;
-                
-                //printf("\ndataCapacity: %ld\n\n", dataCapacity);
             }
         } else {
             if (digitalRead(gpio_pin) == LOW) {

@@ -6,7 +6,7 @@
 //#define SERVER_IP "192.168.1.112" // IP адрес Митино
 //#define SERVER_IP "192.168.0.119" // IP адрес дом
 //#define SERVER_IP "10.10.1.62"  // IP адрес работа
-#define SERVER_IP "192.168.0.110" // IP адрес ноут общага
+//#define SERVER_IP "192.168.0.128" // IP адрес ноут общага
 //#define SERVER_IP "10.10.1.217" // IP адрес ноут работа
 
 void audioTxEth_PI(unsigned char *buffer) {

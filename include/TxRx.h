@@ -22,11 +22,11 @@
 #include <alsa/pcm.h>
 #include <wiringPi.h>
 
-
+#define SERVER_IP "192.168.0.128"
 #define DEV_DIR "/dev"
 #define BUFFER_SIZE 2048
 #define PERIODS 1024
-#define TTY "ttyAMA"
+#define TTY "/dev/ttyUSB0"
 #define PORT 5678
 #define CHANNELS 2
 #define SAMPLERATE 48000

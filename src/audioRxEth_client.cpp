@@ -214,13 +214,6 @@ void audioRxEth_client(unsigned char *buffer) {
     //system("gpio -g write 20 1");
 
     while(1) {
-        /*if (kbhit()) {
-            char key = getchar();  // Получаем символ
-            if (key == 'p') {
-                break;  // Прерываем цикл, если нажата клавиша 'p'
-            }
-        }*/
-
         if ((newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen)) < 0) {
         perror("Accept error");
         continue;
@@ -262,25 +255,7 @@ void audioRxEth_client(unsigned char *buffer) {
             }*/                                           //Отладка 
 
             int err = 0;
-            //snd_pcm_uframes_t avail;
             int frames = n / (channels * 2);
-
-            //avail = snd_pcm_avail_update(playback_handle);
-            //if (avail < frames) {
-            //    usleep(1000);
-            //} else {
-
-            /*int nulls = 0;
-            for (size_t i = 0; i < BUFFER_SIZE; i++) {
-                if (buffer[i] == 0) {
-                    nulls += 1;
-                }
-            }
-            if (nulls > 512) {
-                printf("Received silent buffer, resetting ALSA...\n");
-                snd_pcm_drop(playback_handle);
-                snd_pcm_prepare(playback_handle);
-            }*/
             
             state = snd_pcm_state(playback_handle);
             if (state == SND_PCM_STATE_XRUN) {

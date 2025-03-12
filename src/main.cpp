@@ -1,8 +1,9 @@
 #include "TxRx.h"
 #include <wiringPi.h>
 
+
 int main() {   
-    
+    const char buttons[] = {'K', 'N'};
     unsigned char *buffer = (unsigned char *)malloc(BUFFER_SIZE * sizeof(*buffer));// Выделение памяти для буфера
 
     if (wiringPiSetupGpio() == -1) {
@@ -24,6 +25,7 @@ int main() {
     /*while(1) {
         RxEth(buffer);
         Tx(buffer);
+        //usleep(100000);
         Rx(buffer);
         TxEth(buffer);
     }*/
