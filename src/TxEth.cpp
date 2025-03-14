@@ -1,6 +1,6 @@
 #include "TxRx.h"
 
-#define SERVER_IP "192.168.0.105" // IP адрес дом
+//#define SERVER_IP "192.168.0.105" // IP адрес дом
 //#define SERVER_IP "10.10.1.211"  // IP адрес работа
 
 void TxEth(unsigned char * buffer) { // TODO Change int to void, or return error codes instead of exit

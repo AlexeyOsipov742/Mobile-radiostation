@@ -48,7 +48,7 @@ void audioRxEth_PI(unsigned char *buffer) {
     struct timeval timeout;  // Структура для указания времени ожидания
 
     // Открываем PCM устройство
-    if (snd_pcm_open(&playback_handle, "hw:1,0", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
+    if (snd_pcm_open(&playback_handle, "hw:0,0", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
         perror("Cannot open audio device");
         close(sockfd);
         return;
@@ -211,7 +211,7 @@ void audioRxEth_PI(unsigned char *buffer) {
                 memmove(buffer, buffer + 2, BUFFER_SIZE - 2);
                 Tx(buffer);
                 //usleep(10000);
-                //Rx(buffer);
+                Rx(buffer);
                 TxEth(buffer);
                 memset(buffer, 0, BUFFER_SIZE);
             } else {

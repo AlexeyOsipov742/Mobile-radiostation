@@ -41,7 +41,7 @@ void RxEth(unsigned char * buffer) {
     }
 
     // Читаем данные из сокета
-    int n = read(newsockfd, buffer, BUFFER_SIZE);
+    int n = recv(newsockfd, buffer, BUFFER_SIZE, 0);
     if (n < 0) {
         perror("Error reading from socket");
         exit(1);

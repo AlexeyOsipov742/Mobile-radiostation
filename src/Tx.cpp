@@ -9,9 +9,9 @@ void Tx(unsigned char *buffer) {
 
     printf("TX EXECS NOW\n");
 
-    char *port = find_ttyUSB_port();
+    char *port = TTY;
 
-    printf("Found ttyAMA port: %s\n", port);
+    printf("Found ttyUSB port: %s\n", port);
 
     // Открываем COM порт для передачи
     fd = open(port, O_RDWR | O_NOCTTY);
@@ -46,7 +46,7 @@ void Tx(unsigned char *buffer) {
     
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
-
+    usleep(10000);
     // Отправляем данные через COM порт
     int bytes_written = write(fd, buffer, BUFFER_SIZE);
 

@@ -1,42 +1,14 @@
 #include "TxRx.h"
 
 
-char *find_ttyUSB_port() {
-    DIR *dir;
-    struct dirent *entry;
-    char *port = NULL;
-
-    dir = opendir(DEV_DIR);
-    if (!dir) {
-        perror("Failed to open /dev directory");
-        return NULL;
-    }
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (strncmp(entry->d_name, TTY, 6) == 0) {
-            port = (char*)malloc(strlen(DEV_DIR) + strlen(entry->d_name) + 2);
-            if (!port) {
-                perror("Memory allocation error");
-                closedir(dir);
-                return NULL;
-            }
-            sprintf(port, "%s/%s", DEV_DIR, entry->d_name);
-            break;
-        }
-    }
-
-    closedir(dir);
-    return port;
-}
-
 void Rx(unsigned char * buffer) {
     int fd;
     struct termios options;
     
     printf("RX EXECS NOW\n");
     
-    char *port = find_ttyUSB_port();
-    printf("Found ttyAMA port: %s\n", port);
+    char *port = TTY;
+    printf("Found ttyUSB port: %s\n", port);
 
     // Открываем COM порт для передачи
     fd = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -65,7 +37,7 @@ void Rx(unsigned char * buffer) {
     ioctl(fd, TIOCMGET, &status); // Получаем текущее состояние сигналов
     status &= ~TIOCM_RTS; // Отключаем RTS
     ioctl(fd, TIOCMSET, &status); // Устанавливаем новое состояние сигналов
-    //usleep(100000);
+    usleep(10000);
 
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
@@ -73,7 +45,7 @@ void Rx(unsigned char * buffer) {
     ssize_t bytes_read = 0;
 
     // Ожидаем первой порции данных
-    while (bytes_read <= 0) {
+    /*while (bytes_read <= 0) {
         bytes_read = read(fd, buffer, BUFFER_SIZE);
         if (bytes_read == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -87,7 +59,8 @@ void Rx(unsigned char * buffer) {
     }
 
     memset(buffer, 0, BUFFER_SIZE);
-
+    */
+    
     time_t start_time = time(NULL); // Засекаем начальное время чтения данных
 
     while ((time(NULL) - start_time) < 0.05) {
