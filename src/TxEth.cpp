@@ -17,7 +17,7 @@ void TxEth(unsigned char * buffer) { // TODO Change int to void, or return error
 
     // Настройка структуры адреса сервера
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_port = htons(7777);
 
     if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
         perror("Invalid address/ Address not supported");
