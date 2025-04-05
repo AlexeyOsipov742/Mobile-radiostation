@@ -49,23 +49,23 @@ int main() {
     printf("Start reading for 1000 ms...\n");
 
     struct timeval start, now;
-    gettimeofday(&start, NULL);
+ 
 
     while (1) {
-        gettimeofday(&now, NULL);
+        gettimeofday(&start, NULL);
         while(1) {
+            gettimeofday(&now, NULL);
             ioctl(fd, TIOCMGET, &status);
             if (status & TIOCM_CTS) {
                 long elapsed_ms = (now.tv_sec - start.tv_sec) * 1000 +
                                 (now.tv_usec - start.tv_usec) / 1000;
                 if (elapsed_ms >= 1000) break;
-
+                printf("ms = %ld\n", elapsed_ms);
                 // Чтение сигналов RTS и CTS
                 ioctl(fd, TIOCMGET, &status);
-                printf("RTS: %s | CTS: %s | ms: %ld\n",
+                printf("RTS: %s | CTS: %s\n",
                     (status & TIOCM_RTS) ? "ON" : "OFF",
-                    (status & TIOCM_CTS) ? "ON" : "OFF",
-                    elapsed_ms);
+                    (status & TIOCM_CTS) ? "ON" : "OFF");
 
                 // Попытка чтения
                 int bytes_read = read(fd, buffer, sizeof(buffer));
