@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/time.h>
 #include <iostream>
 #include <alsa/asoundlib.h>
 #include <alsa/pcm.h>
@@ -44,7 +45,6 @@ void audioTxEth_client(unsigned char * buffer);
 void audioRxEth_PI(unsigned char * buffer);
 char * find_ttyUSB_port();
 snd_pcm_t * setup_hw(const char * device, unsigned int channels, unsigned int rate, snd_pcm_uframes_t buffer_size, snd_pcm_uframes_t period_size, int sockfd);
-int kbhit(void);
 
 
 

@@ -34,6 +34,14 @@ void TxEth(unsigned char * buffer) { // TODO Change int to void, or return error
         printf("Transmited data: %02X (Char: `%c`, Int: `%d`)\n", buffer[i], buffer[i], buffer[i]);
 */
     // Отправка сообщения на сервер
-    send(sockfd, buffer, 255, 0);
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+	printf("%02x", buffer[i]);
+    }
+    printf("\n");
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+	printf("%c", buffer[i]);
+    }
+    printf("\n");
+    send(sockfd, buffer, BUFFER_SIZE, 0);
     close(sockfd);
 }
