@@ -10,8 +10,9 @@
 
 int main() {
     const char *port = "/dev/ttyUSB0";
+    //const char message[] = "\x05\x04\xFF\x57\xCC";
     char buffer[64] = {0};
-    int fd = open(port, O_RDWR | O_NOCTTY);  // Не используем O_NONBLOCK
+    int fd = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK);  // Не используем O_NONBLOCK
 
     if (fd == -1) {
         perror("Failed to open port");
@@ -41,6 +42,19 @@ int main() {
 
     // Принудительно опускаем RTS вручную
     int status;
+    /*ioctl(fd, TIOCMGET, &status);
+    status |= TIOCM_RTS;
+    ioctl(fd, TIOCMSET, &status);
+    usleep(10000); // Небольшая задержка
+
+    int bytes_written = write(fd, message, sizeof(message));
+
+    if (bytes_written < 0) {
+        perror("Error writing to port - ");
+        close(fd);
+    }
+    usleep(10000);
+    */
     ioctl(fd, TIOCMGET, &status);
     status &= ~TIOCM_RTS;
     ioctl(fd, TIOCMSET, &status);
@@ -49,7 +63,7 @@ int main() {
     printf("Start reading for 1000 ms...\n");
 
     struct timeval start, now;
- 
+    int offset = 0; 
 
     while (1) {
         gettimeofday(&start, NULL);
@@ -68,13 +82,19 @@ int main() {
                     (status & TIOCM_CTS) ? "ON" : "OFF");
 
                 // Попытка чтения
-                int bytes_read = read(fd, buffer, sizeof(buffer));
+                int bytes_read = read(fd, buffer + offset, sizeof(buffer) - offset);
                 if (bytes_read > 0) {
                     printf("Read %d bytes: ", bytes_read);
                     for (int i = 0; i < bytes_read; ++i) {
-                        printf("%02x ", (unsigned char)buffer[i]);
+                        printf("%02x ", (unsigned char)buffer[i + offset]);
                     }
                     printf("\n");
+                    printf("Read %d bytes: ", bytes_read);
+                    for (int i = 0; i < bytes_read; ++i) {
+                        printf("%c ", buffer[i + offset]);
+                    }
+                    printf("\n");
+		    offset += bytes_read;
                 } else if (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     perror("Read error");
                     break;
