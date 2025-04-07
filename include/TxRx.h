@@ -17,10 +17,15 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/time.h>
 #include <iostream>
 #include <alsa/asoundlib.h>
 #include <alsa/pcm.h>
 #include <wiringPi.h>
+#include <atomic>
+#include <csignal>
+#include <thread>
+#include <mutex>
 
 #define SERVER_IP "192.168.1.1"
 #define DEV_DIR "/dev"
@@ -36,15 +41,20 @@
 
 void Rx(unsigned char * buffer);
 void Tx(unsigned char * buffer);
-void RxEth(unsigned char * buffer);
+int RxEth(unsigned char * buffer);
 void TxEth(unsigned char * buffer);
-void audioRxEth_client(unsigned char * buffer);
-void audioTxEth_PI(unsigned char * buffer);
-void audioTxEth_client(unsigned char * buffer);
-void audioRxEth_PI(unsigned char * buffer);
+void audioTxEth_PI(unsigned char * buffer, std::atomic<bool> &running);
+void audioRxEth_PI(unsigned char * buffer, std::atomic<bool> &running);
 char * find_ttyUSB_port();
+void audio(std::atomic<bool> &running);
+void command(std::atomic<bool> &running);
+
+extern std::mutex uart_mutex;
+extern std::atomic<bool> audio_running;
+extern std::atomic<bool> cmd_running;
+
+void signal_handler(int signal);
 snd_pcm_t * setup_hw(const char * device, unsigned int channels, unsigned int rate, snd_pcm_uframes_t buffer_size, snd_pcm_uframes_t period_size, int sockfd);
-int kbhit(void);
 
 
 

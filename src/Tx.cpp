@@ -46,9 +46,9 @@ void Tx(unsigned char *buffer) {
     
     // Применяем новые параметры порта
     tcsetattr(fd, TCSANOW, &options);
-    usleep(10000);
+    usleep(100000);
     // Отправляем данные через COM порт
-    int bytes_written = write(fd, buffer, BUFFER_SIZE);
+    int bytes_written = write(fd, buffer, 128);
 
     if (bytes_written < 0) {
         perror("Error writing to port - ");

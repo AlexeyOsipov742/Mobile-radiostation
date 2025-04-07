@@ -9,7 +9,8 @@
 //#define SERVER_IP "192.168.0.128" // IP адрес ноут общага
 //#define SERVER_IP "10.10.1.217" // IP адрес ноут работа
 
-void audioTxEth_PI(unsigned char *buffer) {
+void audioTxEth_PI(unsigned char *buffer, std::atomic<bool> &running) {
+    //std::lock_guard<std::mutex> lock(uart_mutex);
     // Параметры для захвата звука
     snd_pcm_t *capture_handle;
     snd_pcm_hw_params_t *hw_params;
@@ -173,7 +174,7 @@ void audioTxEth_PI(unsigned char *buffer) {
 
 
    // Основной цикл для захвата и передачи данных
-    while (digitalRead(gpio_pin) == LOW) {
+    while (digitalRead(gpio_pin) == LOW && running) {
     //while(1) {
         // Захватываем аудиоданные
         //printf("j = %d\n", j);

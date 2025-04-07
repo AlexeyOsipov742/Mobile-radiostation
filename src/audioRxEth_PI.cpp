@@ -3,7 +3,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <wiringPi.h>
-void audioRxEth_PI(unsigned char *buffer) {
+void audioRxEth_PI(unsigned char *buffer, std::atomic<bool> &running) {
     //Параметры для захвата звука
     snd_pcm_t *playback_handle;
     snd_pcm_hw_params_t *hw_params;
@@ -187,7 +187,7 @@ void audioRxEth_PI(unsigned char *buffer) {
     
     */
 
-    while (1) {
+    while (running) {
 
         FD_ZERO(&readfds);        // Очищаем множество
         FD_SET(sockfd, &readfds);   // Добавляем слушающий сокет
@@ -208,12 +208,14 @@ void audioRxEth_PI(unsigned char *buffer) {
             }
             int first_data = recv(newsockfd, buffer, BUFFER_SIZE, 0);
             if ( (buffer[0] == buttons[0])  &&  (buffer[1] == buttons[1])) {
-                memmove(buffer, buffer + 2, BUFFER_SIZE - 2);
+                /*memmove(buffer, buffer + 2, BUFFER_SIZE - 2);
                 Tx(buffer);
                 //usleep(10000);
                 Rx(buffer);
                 TxEth(buffer);
-                memset(buffer, 0, BUFFER_SIZE);
+                memset(buffer, 0, BUFFER_SIZE);*/
+                printf("Command packet received in audio thread. Skipping...");
+                continue;
             } else {
                 printf("Client connected\n");
                 system("gpio -g mode 20 out");
