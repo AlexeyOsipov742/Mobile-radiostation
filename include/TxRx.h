@@ -19,22 +19,20 @@
 #include <time.h>
 #include <sys/time.h>
 #include <iostream>
-#include <alsa/asoundlib.h>
-#include <alsa/pcm.h>
-#include <wiringPi.h>
 #include <atomic>
 #include <csignal>
 #include <thread>
 #include <mutex>
 
-#define SERVER_IP "192.168.1.1"
+#define SERVER_IP "10.10.1.62"
+//#define SERVER_IP "192.168.31.204"
 #define DEV_DIR "/dev"
 #define BUFFER_SIZE 2048
 #define PERIODS 1024
 #define TTY "/dev/ttyUSB0"
 #define PORT 5678
 #define CHANNELS 2
-#define SAMPLERATE 48000
+#define SAMPLERATE 44100
 #define RESAMPLE 1
 #define CAPTURE_DEV "hw:0,6"
 #define PLAYBACK_DEV "hw:0,0"
@@ -54,7 +52,7 @@ extern std::atomic<bool> audio_running;
 extern std::atomic<bool> cmd_running;
 
 void signal_handler(int signal);
-snd_pcm_t * setup_hw(const char * device, unsigned int channels, unsigned int rate, snd_pcm_uframes_t buffer_size, snd_pcm_uframes_t period_size, int sockfd);
-
-
-
+bool gpio_init();
+void gpio_cleanup();
+int gpio_get_ptt_level();
+void gpio_set_activity_led(bool on);

@@ -88,16 +88,17 @@ void Rx(unsigned char * buffer) {
                 }
                 printf("\n");
                 //offset += bytes_read;
+                for (int i = 0; i < bytes_read; i++) {
+                    buffer[i + buffer_counter] = local_buffer[i];
+                }
+                buffer_counter += bytes_read;
+                memset(local_buffer, 0, sizeof(local_buffer));
+                
             } else if (bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                 perror("Read error");
                 printf("Error reading\n");
             }
             
-            for (int i = 0; i < bytes_read; i++) {
-                buffer[i + buffer_counter] = local_buffer[i];
-            }
-            buffer_counter += bytes_read;
-	    memset(local_buffer, 0, sizeof(local_buffer));
             usleep(5000); // Чтобы не грузить CPU
         }
     }
