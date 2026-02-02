@@ -1,35 +1,43 @@
 #include "TxRx.h"
-#include <wiringPi.h>
 
-
-int main() {   
-    const char buttons[] = {'K', 'N'};
-    unsigned char *buffer = (unsigned char *)malloc(BUFFER_SIZE * sizeof(*buffer));// Выделение памяти для буфера
-
-    if (wiringPiSetupGpio() == -1) {
-        perror("GPIO setup failed");
-        return 0;
+int main() {
+    unsigned char *buffer = (unsigned char *)std::malloc(BUFFER_SIZE * sizeof(*buffer));
+    if (!buffer) {
+        std::perror("malloc");
+        return 1;
     }
 
-    int gpio_pin = 19; // GPIO номер для 37 пина на плате
-    pinMode(gpio_pin, INPUT); // Настройка пина как вход
-    pullUpDnControl(gpio_pin, PUD_UP); // Подтяжка к "земле" для стабильности
-    
-    while(1) {
-        if (digitalRead(gpio_pin) == LOW) {
+    // BCM numbering
+    if (wiringPiSetupGpio() == -1) {
+        std::perror("wiringPiSetupGpio");
+        std::free(buffer);
+        return 1;
+    }
+
+    // COR input (active LOW)
+    pinMode(RPI_COR_GPIO, INPUT);
+    pullUpDnControl(RPI_COR_GPIO, PUD_UP);
+
+    // PTT output (active HIGH)
+    pinMode(RPI_PTT_GPIO, OUTPUT);
+    digitalWrite(RPI_PTT_GPIO, LOW);
+
+    // CS lines for MCP4822/MCP3201 (active LOW)
+    pinMode(RPI_DAC_CS_GPIO, OUTPUT);
+    digitalWrite(RPI_DAC_CS_GPIO, HIGH);
+    pinMode(RPI_ADC_CS_GPIO, OUTPUT);
+    digitalWrite(RPI_ADC_CS_GPIO, HIGH);
+
+    while (1) {
+        if (digitalRead(RPI_COR_GPIO) == LOW) {
+            // Radio receives (COR active): sample from ADC and stream to NaPi
             audioTxEth_PI(buffer);
         } else {
+            // No RX from air: wait for NaPi TX, key PTT and play to DAC
             audioRxEth_PI(buffer);
         }
     }
-    /*while(1) {
-        RxEth(buffer);
-        Tx(buffer);
-        //usleep(100000);
-        Rx(buffer);
-        TxEth(buffer);
-    }*/
-    free(buffer);
 
+    std::free(buffer);
     return 0;
 }

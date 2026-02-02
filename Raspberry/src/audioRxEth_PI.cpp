@@ -1,90 +1,224 @@
-// audioRxEth_PI.cpp (Raspberry Pi) — TCP -> ALSA
-// FIX:
-//  - recv_exact(): читаем РОВНО BUFFER_SIZE байт на каждый аудиоблок (TCP может дробить)
-//  - "probe" не ломает поток: проверяем KN через MSG_PEEK
-//  - Debug КАЖДЫЙ пакет: CRC32(всего буфера) + min/max/rms + head/tail samples
-//  - ALSA rate_near на 12000
-//  - C++ FIX: убран goto через инициализацию (timeout/rx_pkt_id перенесены выше)
-//  - JITTER BUFFER: отдельный поток recv + ring buffer + prefill, чтобы убрать underrun
+// audioRxEth_PI.cpp (Raspberry Pi) — TCP -> MCP4822 (DAC) + PTT
+//
+// Этот файл заменяет старую реализацию через ALSA.
+// Режим работы:
+//   - вызывается из main(), когда COR НЕ активен (digitalRead(RPI_COR_GPIO) == HIGH)
+//   - слушает PORT (5678) и принимает TCP соединение от NaPi
+//   - при подключении поднимает PTT (RPI_PTT_GPIO = HIGH) и начинает воспроизведение входящего аудио через MCP4822
+//   - выходит (возвращается в main), если COR становится активен (LOW) — т.е. радио начало принимать
+//
+// Протокол аудио:
+//   - mono S16LE, BUFFER_SIZE байт на пакет (1024 семпла) @ RPI_LOCAL_FS (по умолчанию 12000)
+//
+// Управляющие пакеты:
+//   - если первые 2 байта при новом подключении == 'K''N', считаем это управляющей посылкой
+//     и обрабатываем так же, как в старом коде (Tx/Rx/TxEth), затем закрываем соединение.
+//
+// DEBUG:
+//  - Раз в ~2 сек печатает статистику по принятому S16 блоку + первые 10 семплов + первые 16 байт (hex)
 
 #include "TxRx.h"
 
-#include <alsa/pcm.h>
-#include <arpa/inet.h>
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
-
-#include <wiringPi.h>
-#include <cmath>
-
-#include <atomic>
-#include <condition_variable>
+#include <linux/spi/spidev.h>
 #include <mutex>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <thread>
+#include <time.h>
+#include <unistd.h>
 #include <vector>
 
-static constexpr unsigned int kAudioSampleRate = 12000;
-static constexpr int kJitterPackets  = 8;
-static constexpr int kPrefillPackets = 4;
+#include <sched.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
-// ---- CRC32 ----
-static uint32_t crc32_fast(const void* data, size_t len) {
-    const uint8_t* p = static_cast<const uint8_t*>(data);
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= p[i];
-        for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
-    }
-    return ~crc;
+namespace {
+
+static_assert(BUFFER_SIZE % 2 == 0, "BUFFER_SIZE must be even (S16LE)");
+
+constexpr uint32_t kFs = static_cast<uint32_t>(RPI_LOCAL_FS);
+
+inline int clampi(int v, int lo, int hi) {
+    return (v < lo) ? lo : (v > hi) ? hi : v;
 }
 
-static void dump_packet_stats_rx(uint32_t pkt_id, const unsigned char* buf, int nbytes) {
-    if (nbytes < 2) {
-        std::printf("[RX] pkt=%u nbytes=%d (too short)\n", pkt_id, nbytes);
-        return;
+// ---------- DEBUG helpers ----------
+
+struct WavWriter {
+    FILE* f{nullptr};
+    uint32_t data_bytes{0};
+    uint32_t sample_rate{8000};
+    uint16_t channels{1};
+    uint16_t bits_per_sample{16};
+
+    static void write_u32_le(FILE* fp, uint32_t v) {
+        uint8_t b[4] = {(uint8_t)(v), (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+        fwrite(b, 1, 4, fp);
     }
-    int samples = nbytes / 2;
-    const int16_t* s = reinterpret_cast<const int16_t*>(buf);
+    static void write_u16_le(FILE* fp, uint16_t v) {
+        uint8_t b[2] = {(uint8_t)(v), (uint8_t)(v >> 8)};
+        fwrite(b, 1, 2, fp);
+    }
+
+    bool open_new(const char* path, uint32_t sr, uint16_t ch=1, uint16_t bps=16) {
+        close(); // close previous if any
+        sample_rate = sr;
+        channels = ch;
+        bits_per_sample = bps;
+        data_bytes = 0;
+
+        f = fopen(path, "wb");
+        if (!f) return false;
+
+        // big-ish buffer to reduce overhead
+        static char buf[1 << 20];
+        setvbuf(f, buf, _IOFBF, sizeof(buf));
+
+        // RIFF header placeholder (44 bytes)
+        fwrite("RIFF", 1, 4, f);          write_u32_le(f, 0);          // chunk size placeholder
+        fwrite("WAVE", 1, 4, f);
+
+        fwrite("fmt ", 1, 4, f);          write_u32_le(f, 16);         // PCM fmt chunk
+        write_u16_le(f, 1);               // audio format = PCM
+        write_u16_le(f, channels);
+        write_u32_le(f, sample_rate);
+        uint32_t byte_rate = sample_rate * channels * (bits_per_sample / 8);
+        write_u32_le(f, byte_rate);
+        uint16_t block_align = channels * (bits_per_sample / 8);
+        write_u16_le(f, block_align);
+        write_u16_le(f, bits_per_sample);
+
+        fwrite("data", 1, 4, f);          write_u32_le(f, 0);          // data size placeholder
+        return true;
+    }
+
+    void write_pcm_s16le(const void* pcm, size_t bytes) {
+        if (!f || !pcm || bytes == 0) return;
+        fwrite(pcm, 1, bytes, f);
+        data_bytes += (uint32_t)bytes;
+    }
+
+    void close() {
+        if (!f) return;
+
+        // finalize header sizes
+        uint32_t riff_size = 36u + data_bytes;
+        fseek(f, 4, SEEK_SET);   write_u32_le(f, riff_size);
+        fseek(f, 40, SEEK_SET);  write_u32_le(f, data_bytes);
+
+        fflush(f);
+        fclose(f);
+        f = nullptr;
+    }
+};
+
+static void dump_s16_stats_rx(uint32_t blk_id, const int16_t* s, size_t n, uint32_t fs_hz) {
+    if (!s || n == 0) return;
 
     int16_t mn = s[0], mx = s[0];
-    int64_t sumsq = 0;
-    for (int i = 0; i < samples; i++) {
+    int64_t sum = 0;
+    double sumsq = 0.0;
+    size_t zeros = 0, clip = 0;
+
+    for (size_t i = 0; i < n; ++i) {
         int16_t v = s[i];
         if (v < mn) mn = v;
         if (v > mx) mx = v;
-        int32_t vv = v;
-        sumsq += (int64_t)vv * (int64_t)vv;
+        sum += v;
+        sumsq += (double)v * (double)v;
+        if (v == 0) zeros++;
+        if (v == INT16_MAX || v == INT16_MIN) clip++;
     }
-    double rms = std::sqrt((double)sumsq / (double)samples) / 32768.0;
-    uint32_t c = crc32_fast(buf, (size_t)nbytes);
 
-    std::printf("[RX] pkt=%u crc=%08X min=%d max=%d rms=%.4f head=",
-                pkt_id, c, (int)mn, (int)mx, rms);
+    double mean = (double)sum / (double)n;
+    double rms  = std::sqrt(sumsq / (double)n);
+    double pk   = std::max(std::abs((int)mn), std::abs((int)mx));
 
-    for (int i = 0; i < 8 && i < samples; i++) std::printf("%d ", (int)s[i]);
-
-    std::printf("tail=");
-    if (samples >= 8) {
-        for (int i = 8; i > 0; i--) std::printf("%d ", (int)s[samples - i]);
+    // первые 10 семплов
+    char first[256];
+    int off = 0;
+    off += std::snprintf(first + off, sizeof(first) - (size_t)off, "[");
+    size_t show = (n < 10) ? n : 10;
+    for (size_t i = 0; i < show; ++i) {
+        off += std::snprintf(first + off, sizeof(first) - (size_t)off,
+                             "%d%s", (int)s[i], (i + 1 == show) ? "]" : ",");
+        if (off >= (int)sizeof(first)) break;
     }
-    std::printf("\n");
+
+    // первые 16 байт (hex)
+    const uint8_t* b = (const uint8_t*)s;
+    char hex[128];
+    int ho = 0;
+    ho += std::snprintf(hex + ho, sizeof(hex) - (size_t)ho, "[");
+    for (int i = 0; i < 16 && (size_t)i < n * 2; ++i) {
+        ho += std::snprintf(hex + ho, sizeof(hex) - (size_t)ho,
+                            "%02X%s", b[i], (i == 15) ? "]" : " ");
+        if (ho >= (int)sizeof(hex)) break;
+    }
+
+    std::fprintf(stderr,
+                 "[RPI-RX] blk=%u n=%zu fs=%u s16[min=%d max=%d mean=%.1f rms=%.1f pk=%.0f zeros=%zu clip=%zu] first=%s bytes=%s\n",
+                 blk_id, n, fs_hz, (int)mn, (int)mx, mean, rms, pk, zeros, clip, first, hex);
 }
 
-// читаем ровно want байт или false
-static bool recv_exact(int fd, unsigned char* dst, int want) {
+// ---------- timing ----------
+inline uint64_t now_ns() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+inline void ts_from_ns(uint64_t tns, timespec *ts) {
+    ts->tv_sec  = (time_t)(tns / 1000000000ull);
+    ts->tv_nsec = (long)(tns % 1000000000ull);
+}
+
+inline void busy_wait_to(uint64_t t_next) {
+    uint64_t now = now_ns();
+    if (now + 5'000ull < t_next) {
+        timespec ts{};
+        ts_from_ns(t_next - 3'000ull, &ts);
+        (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr);
+    }
+    while ((now = now_ns()) < t_next) {
+        // spin
+    }
+}
+
+// ---------- MCP4822 ----------
+inline uint16_t mcp4822_word(bool chB, uint16_t u12) {
+    // [15]=A/B, [14]=BUF(0), [13]=GA(1=1x), [12]=SHDN(1=active)
+    return (uint16_t)(((chB ? 1 : 0) << 15) | (1 << 13) | (1 << 12) | (u12 & 0x0FFF));
+}
+
+inline uint16_t s16_to_u12(int16_t s, float vol) {
+    float x = (float)s / 32768.0f;
+    x *= vol;
+    if (x > 0.999f) x = 0.999f;
+    if (x < -0.999f) x = -0.999f;
+    float y = x * 0.5f + 0.5f;  // [-1..1] -> [0..1]
+    int v = (int)lrintf(y * 4095.0f);
+    v = clampi(v, 0, 4095);
+    return (uint16_t)v;
+}
+
+// ---------- recv helpers ----------
+// recv_exact с учетом SO_RCVTIMEO: при timeout вернёт false, errno=EAGAIN/EWOULDBLOCK
+static bool recv_exact(int fd, unsigned char *dst, int want) {
     int got = 0;
     while (got < want) {
         int n = ::recv(fd, dst + got, want - got, 0);
         if (n < 0) {
             if (errno == EINTR) continue;
-            perror("recv");
             return false;
         }
         if (n == 0) return false;
@@ -93,296 +227,360 @@ static bool recv_exact(int fd, unsigned char* dst, int want) {
     return true;
 }
 
-void audioRxEth_PI(unsigned char *buffer) {
-    snd_pcm_t *playback_handle = nullptr;
-    snd_pcm_hw_params_t *hw_params = nullptr;
+// ---------- ring buffer ----------
+class Ring {
+public:
+    explicit Ring(size_t cap) : buf(cap), cap(cap) {}
 
-    // C++ FIX: эти переменные ДОЛЖНЫ быть объявлены до любых goto fail;
-    fd_set readfds;
-    struct timeval timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_usec = 0;
-    uint32_t rx_pkt_id = 0;
-
-    const char buttons[] = {'K', 'N'};
-
-    int sockfd = -1, newsockfd = -1;
-    struct sockaddr_in serv_addr{}, cli_addr{};
-
-    unsigned int sampleRate = kAudioSampleRate;
-    unsigned int resample = 1;
-
-    const int alsa_channels = 2;
-    snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
-    snd_pcm_uframes_t local_periods = PERIODS;
-
-    socklen_t clilen = 0;
-
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("Socket creation error");
-        return;
-    }
-    int optval = 1;
-    (void)setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
-
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(PORT);
-
-    if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Bind error");
-        close(sockfd);
-        return;
-    }
-    listen(sockfd, 5);
-    clilen = sizeof(cli_addr);
-
-    int gpio_pin = 19;
-    pinMode(gpio_pin, INPUT);
-    pullUpDnControl(gpio_pin, PUD_UP);
-
-    if (snd_pcm_open(&playback_handle, "plughw:0,0", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
-        perror("Cannot open audio device");
-        close(sockfd);
-        return;
+    size_t push(const int16_t *data, size_t n) {
+        std::unique_lock<std::mutex> lk(m);
+        size_t free = cap - size;
+        size_t take = (n > free) ? free : n;
+        for (size_t i = 0; i < take; i++) {
+            buf[(head++) % cap] = data[i];
+        }
+        size += take;
+        lk.unlock();
+        cv.notify_one();
+        return take;
     }
 
-    if (snd_pcm_hw_params_malloc(&hw_params) < 0) {
-        perror("Cannot allocate hw params");
-        snd_pcm_close(playback_handle);
-        close(sockfd);
-        return;
-    }
-    if (snd_pcm_hw_params_any(playback_handle, hw_params) < 0) {
-        perror("Cannot configure hw");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(playback_handle);
-        close(sockfd);
-        return;
+    bool pop_one(int16_t &out) {
+        std::unique_lock<std::mutex> lk(m);
+        cv.wait(lk, [&] { return size > 0 || stop; });
+        if (size == 0 && stop) return false;
+        out = buf[(tail++) % cap];
+        size--;
+        return true;
     }
 
-    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
-    std::printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
-
-    if (snd_pcm_hw_params_set_format(playback_handle, hw_params, SND_PCM_FORMAT_S16_LE) < 0) {
-        perror("Cannot set format");
-        goto fail;
-    }
-    if (snd_pcm_hw_params_set_access(playback_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
-        perror("Cannot set access");
-        goto fail;
-    }
-    if (snd_pcm_hw_params_set_channels(playback_handle, hw_params, alsa_channels) < 0) {
-        perror("Cannot set channels");
-        goto fail;
+    size_t available() {
+        std::lock_guard<std::mutex> lk(m);
+        return size;
     }
 
-    if (snd_pcm_hw_params_set_rate_near(playback_handle, hw_params, &sampleRate, 0) < 0) {
-        perror("Cannot set rate near");
-        goto fail;
-    }
-    std::printf("ALSA rate_near result: %u Hz\n", sampleRate);
-
-    if (snd_pcm_hw_params_set_rate_resample(playback_handle, hw_params, resample) < 0) {
-        perror("Cannot set resample");
-        goto fail;
-    }
-    if (snd_pcm_hw_params_set_buffer_size_near(playback_handle, hw_params, &local_buffer) < 0) {
-        perror("Cannot set buffer size");
-        goto fail;
-    }
-    if (snd_pcm_hw_params_set_period_size_near(playback_handle, hw_params, &local_periods, 0) < 0) {
-        perror("Cannot set period size");
-        goto fail;
+    void clear() {
+        std::lock_guard<std::mutex> lk(m);
+        head = tail = size = 0;
     }
 
-    if (snd_pcm_hw_params(playback_handle, hw_params) < 0) {
-        perror("Cannot apply hw params");
-        goto fail;
+    void request_stop() {
+        std::lock_guard<std::mutex> lk(m);
+        stop = true;
+        cv.notify_all();
     }
-    snd_pcm_hw_params_free(hw_params);
-    hw_params = nullptr;
 
-    // mono->stereo
-    static int16_t stereo_buf[(BUFFER_SIZE / 2) * 2];
+private:
+    std::vector<int16_t> buf;
+    size_t cap{};
+    size_t head{0}, tail{0}, size{0};
+    bool stop{false};
+    std::mutex m;
+    std::condition_variable cv;
+};
 
-    struct Ring {
-        std::vector<std::vector<unsigned char>> buf;
-        int r = 0, w = 0, count = 0;
-        std::mutex m;
-        std::condition_variable cv;
-        bool closed = false;
+// ---------- SPI DAC renderer ----------
+class SpiDac {
+public:
+    SpiDac(const char *spi_dev, uint32_t spi_hz, float vol, uint32_t fs_out)
+        : dev(spi_dev), spi_hz(spi_hz), vol(vol), Fs_out(fs_out), q((size_t)fs_out * 1) {} // 1 сек буфер
 
-        Ring() : buf(kJitterPackets, std::vector<unsigned char>(BUFFER_SIZE)) {}
+    bool start() {
+        sfd = ::open(dev, O_RDWR);
+        if (sfd < 0) {
+            std::perror("open spidev");
+            return false;
+        }
 
-        void push_drop_oldest(const unsigned char* src) {
-            std::unique_lock<std::mutex> lk(m);
-            if (count == kJitterPackets) {
-                // drop oldest
-                r = (r + 1) % kJitterPackets;
-                count--;
+        uint8_t mode = (uint8_t)SPI_MODE_0;
+        uint8_t bpw  = 8;
+        if (ioctl(sfd, SPI_IOC_WR_MODE, &mode) == -1) {
+            std::perror("SPI_IOC_WR_MODE");
+            ::close(sfd);
+            sfd = -1;
+            return false;
+        }
+        if (ioctl(sfd, SPI_IOC_WR_BITS_PER_WORD, &bpw) == -1) {
+            std::perror("SPI_IOC_WR_BITS_PER_WORD");
+            ::close(sfd);
+            sfd = -1;
+            return false;
+        }
+        if (ioctl(sfd, SPI_IOC_WR_MAX_SPEED_HZ, &spi_hz) == -1) {
+            std::perror("SPI_IOC_WR_MAX_SPEED_HZ");
+            ::close(sfd);
+            sfd = -1;
+            return false;
+        }
+
+        running.store(true);
+        need_reset.store(true);
+        th = std::thread(&SpiDac::render, this);
+        return true;
+    }
+
+    void stop() {
+        running.store(false);
+        q.request_stop();
+        if (th.joinable()) th.join();
+        // Заглушить выход (перед закрытием SPI)
+        write_u12(2048);
+
+        if (sfd >= 0) ::close(sfd);
+        sfd = -1;
+    }
+
+    void begin_session() {
+        need_reset.store(true, std::memory_order_release);
+    }
+
+    void push_frames(const int16_t *data, size_t frames, int channels) {
+        if (!frames) return;
+        if (channels <= 1) {
+            (void)q.push(data, frames);
+            return;
+        }
+
+        // если вдруг пришел стерео — берем левый канал
+        tmp.resize(frames);
+        for (size_t i = 0; i < frames; i++) tmp[i] = data[i * (size_t)channels];
+        (void)q.push(tmp.data(), frames);
+    }
+
+private:
+    void write_u12(uint16_t u12) {
+        if (sfd < 0) return;
+
+        uint16_t w = mcp4822_word(false /*chA*/, u12);
+        uint8_t tx[2];
+        tx[0] = (uint8_t)(w >> 8);
+        tx[1] = (uint8_t)(w & 0xFF);
+
+        spi_ioc_transfer tr{};
+        tr.tx_buf = (uintptr_t)tx;
+        tr.len = 2;
+        tr.speed_hz = spi_hz;
+        tr.bits_per_word = 8;
+        tr.cs_change = 0;
+        tr.delay_usecs = 0;
+
+        // CS (active low) вручную через GPIO
+        digitalWrite(RPI_DAC_CS_GPIO, LOW);
+        (void)ioctl(sfd, SPI_IOC_MESSAGE(1), &tr);
+        digitalWrite(RPI_DAC_CS_GPIO, HIGH);
+    }
+
+    void render() {
+        // best-effort realtime
+        (void)mlockall(MCL_CURRENT | MCL_FUTURE);
+        sched_param sp{};
+        sp.sched_priority = 60;
+        (void)sched_setscheduler(0, SCHED_FIFO, &sp);
+
+        const uint64_t T = (uint64_t)llround(1e9 / (double)Fs_out);
+        uint64_t t_next = now_ns();
+
+        float env = 0.0f;
+        const float fadeUp   = 1.0f / (0.010f * (float)Fs_out);
+        const float fadeDown = 1.0f / (0.010f * (float)Fs_out);
+
+        while (running.load()) {
+            if (need_reset.exchange(false, std::memory_order_acquire)) {
+                q.clear();
+                env = 0.0f;
+                t_next = now_ns();
             }
-            std::memcpy(buf[w].data(), src, BUFFER_SIZE);
-            w = (w + 1) % kJitterPackets;
-            count++;
-            cv.notify_all();
-        }
 
-        // wait until at least n packets available or closed
-        bool wait_count_at_least(int n) {
-            std::unique_lock<std::mutex> lk(m);
-            cv.wait(lk, [&]{ return closed || count >= n; });
-            return count >= n;
-        }
-
-        bool pop(unsigned char* dst) {
-            std::unique_lock<std::mutex> lk(m);
-            cv.wait(lk, [&]{ return closed || count > 0; });
-            if (count == 0) return false;
-            std::memcpy(dst, buf[r].data(), BUFFER_SIZE);
-            r = (r + 1) % kJitterPackets;
-            count--;
-            return true;
-        }
-
-        void close() {
-            std::unique_lock<std::mutex> lk(m);
-            closed = true;
-            cv.notify_all();
-        }
-    };
-
-    while (1) {
-        FD_ZERO(&readfds);
-        FD_SET(sockfd, &readfds);
-
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 50'000;
-
-        int sel = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
-        if (sel < 0) { perror("select"); break; }
-
-        if (sel == 0) {
-            if (digitalRead(gpio_pin) == LOW) break;
-            continue;
-        }
-
-        newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
-        if (newsockfd < 0) { perror("accept"); continue; }
-
-        // peek 2 bytes to see if it's KN-control message
-        unsigned char peek2[2] = {0, 0};
-        int pn = recv(newsockfd, peek2, 2, MSG_PEEK);
-        if (pn == 2 && peek2[0] == (unsigned char)buttons[0] && peek2[1] == (unsigned char)buttons[1]) {
-            if (!recv_exact(newsockfd, buffer, BUFFER_SIZE)) {
-                close(newsockfd);
-                newsockfd = -1;
+            // underrun -> mid
+            if (q.available() < 1) {
+                env = std::max(0.0f, env - fadeDown);
+                t_next += T;
+                busy_wait_to(t_next);
+                write_u12(2048);
                 continue;
             }
-            memmove(buffer, buffer + 2, BUFFER_SIZE - 2);
-            Tx(buffer);
-            Rx(buffer);
-            TxEth(buffer);
-            memset(buffer, 0, BUFFER_SIZE);
-            close(newsockfd);
-            newsockfd = -1;
-            continue;
-        }
 
-        std::printf("Client connected\n");
-        system("gpio -g mode 20 out");
-        system("gpio -g write 20 1");
-
-        if (snd_pcm_prepare(playback_handle) < 0) std::printf("Error preparing\n");
-
-        // ---- Jitter ring + recv thread ----
-        Ring ring;
-        std::atomic<bool> stop{false};
-
-        std::thread recv_thread([&]{
-            std::vector<unsigned char> tmp(BUFFER_SIZE);
-            while (!stop.load()) {
-                if (!recv_exact(newsockfd, tmp.data(), BUFFER_SIZE)) {
-                    break;
-                }
-                ring.push_drop_oldest(tmp.data());
-            }
-            ring.close();
-        });
-
-        // Prefill before starting playback
-        if (!ring.wait_count_at_least(kPrefillPackets)) {
-            // closed before prefill
-            stop = true;
-            if (recv_thread.joinable()) recv_thread.join();
-            close(newsockfd);
-            newsockfd = -1;
-            system("gpio -g write 20 0");
-            memset(buffer, 0, BUFFER_SIZE);
-            continue;
-        }
-
-        // Playback loop: pop from ring
-        while (1) {
-            if (!ring.pop(buffer)) {
-                // ring closed and empty
+            int16_t s16{};
+            if (!q.pop_one(s16)) {
                 break;
             }
 
-            rx_pkt_id++;
-            dump_packet_stats_rx(rx_pkt_id, buffer, BUFFER_SIZE);
+            // env под запас
+            if (q.available() < (size_t)((double)Fs_out * 0.005))
+                env = std::max(0.0f, env - fadeDown);
+            else
+                env = std::min(1.0f, env + fadeUp);
 
-            const int mono_samples = BUFFER_SIZE / 2;
-            const int16_t *mono = reinterpret_cast<const int16_t*>(buffer);
+            float y = ((float)s16 / 32768.0f) * env;
+            int16_t out = (int16_t)clampi((int)lrintf(y * 32767.0f), -32768, 32767);
 
-            for (int i = 0; i < mono_samples; i++) {
-                stereo_buf[2*i]   = mono[i];
-                stereo_buf[2*i+1] = mono[i];
-            }
-
-            int err = snd_pcm_writei(playback_handle, stereo_buf, mono_samples);
-            if (err < 0) {
-                if (err == -EPIPE) {
-                    std::fprintf(stderr, "Temporary underrun, retrying...\n");
-                    snd_pcm_prepare(playback_handle);
-                } else if (err == -EAGAIN) {
-                    std::fprintf(stderr, "Temporary unavailable, retrying...\n");
-                    continue;
-                } else {
-                    std::fprintf(stderr, "snd_pcm_writei error: %s\n", snd_strerror(err));
-                }
-            }
+            t_next += T;
+            busy_wait_to(t_next);
+            write_u12(s16_to_u12(out, vol));
         }
 
-        stop = true;
-        ring.close();
-        if (recv_thread.joinable()) recv_thread.join();
-
-        std::printf("Connection closed by client\n");
-        close(newsockfd);
-        newsockfd = -1;
-        system("gpio -g write 20 0");
-        memset(buffer, 0, BUFFER_SIZE);
+        // на выходе заглушим
+        write_u12(2048);
     }
 
-    system("gpio -g write 20 0");
-    if (playback_handle) {
-        snd_pcm_drop(playback_handle);
-        snd_pcm_close(playback_handle);
-        playback_handle = nullptr;
-    }
-    if (newsockfd >= 0) close(newsockfd);
-    if (sockfd >= 0) close(sockfd);
-    return;
+    const char *dev;
+    uint32_t spi_hz;
+    float vol;
+    uint32_t Fs_out;
 
-fail:
-    if (hw_params) snd_pcm_hw_params_free(hw_params);
-    if (playback_handle) {
-        snd_pcm_close(playback_handle);
-        playback_handle = nullptr;
+    int sfd{-1};
+    std::thread th;
+    std::atomic<bool> running{false};
+
+    Ring q;
+    std::vector<int16_t> tmp;
+
+    std::atomic<bool> need_reset{false};
+};
+
+} // namespace
+
+void audioRxEth_PI(unsigned char *buffer) {
+    if (kFs == 0) {
+        std::fprintf(stderr, "[RPI-RX] Invalid fs=%u\n", kFs);
+        return;
     }
-    if (newsockfd >= 0) close(newsockfd);
-    if (sockfd >= 0) close(sockfd);
+
+    // Если COR уже активен — не входим в TX-режим
+    if (digitalRead(RPI_COR_GPIO) == LOW) {
+        return;
+    }
+
+    int sockfd = -1;
+    sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        std::perror("socket");
+        return;
+    }
+
+    int optval = 1;
+    (void)setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+
+    sockaddr_in serv{};
+    serv.sin_family = AF_INET;
+    serv.sin_addr.s_addr = INADDR_ANY;
+    serv.sin_port = htons(PORT);
+
+    if (bind(sockfd, (sockaddr *)&serv, sizeof(serv)) < 0) {
+        std::perror("bind");
+        ::close(sockfd);
+        return;
+    }
+    if (listen(sockfd, 5) < 0) {
+        std::perror("listen");
+        ::close(sockfd);
+        return;
+    }
+
+    // accept loop: выходим, если COR станет активным
+    while (digitalRead(RPI_COR_GPIO) != LOW) {
+        // accept с таймаутом, чтобы регулярно проверять COR
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(sockfd, &rfds);
+
+        timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = 100'000; // 100 ms
+
+        int sel = select(sockfd + 1, &rfds, nullptr, nullptr, &tv);
+        if (sel < 0) {
+            if (errno == EINTR) continue;
+            std::perror("select");
+            break;
+        }
+        if (sel == 0) {
+            continue; // timeout
+        }
+
+        sockaddr_in cli{};
+        socklen_t clilen = sizeof(cli);
+        int newsockfd = accept(sockfd, (sockaddr *)&cli, &clilen);
+        if (newsockfd < 0) {
+            if (errno == EINTR) continue;
+            std::perror("accept");
+            continue;
+        }
+
+        // Peek 2 bytes: управляющий пакет "KN"?
+        unsigned char peek2[2] = {0, 0};
+        int pn = recv(newsockfd, peek2, 2, MSG_PEEK);
+        if (pn == 2 && peek2[0] == (unsigned char)'K' && peek2[1] == (unsigned char)'N') {
+            if (recv_exact(newsockfd, buffer, BUFFER_SIZE)) {
+                std::memmove(buffer, buffer + 2, BUFFER_SIZE - 2);
+                Tx(buffer);
+                Rx(buffer);
+                TxEth(buffer);
+                std::memset(buffer, 0, BUFFER_SIZE);
+            }
+            ::close(newsockfd);
+            continue;
+        }
+
+        // --- Audio session ---
+        digitalWrite(RPI_PTT_GPIO, HIGH);
+        usleep(50'000);
+
+        // recv timeout, чтобы не блокировать проверку COR
+        {
+            timeval rcvto{};
+            rcvto.tv_sec = 0;
+            rcvto.tv_usec = 20'000; // 20ms
+            (void)setsockopt(newsockfd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof(rcvto));
+        }
+
+        SpiDac dac(RPI_SPI_DEV, (uint32_t)RPI_SPI_SPEED_HZ, (float)RPI_PLAYBACK_VOL, kFs);
+        if (!dac.start()) {
+            std::fprintf(stderr, "[RPI-RX] DAC start failed\n");
+            digitalWrite(RPI_PTT_GPIO, LOW);
+            ::close(newsockfd);
+            continue;
+        }
+        dac.begin_session();
+//WavWriter wav_rx;
+//wav_rx.open_new("rpi_rx.wav", kFs, 1, 16);	
+        uint32_t blk_id = 0;
+
+        // RX loop
+        while (digitalRead(RPI_COR_GPIO) != LOW) {
+            if (!recv_exact(newsockfd, buffer, BUFFER_SIZE)) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue;
+                }
+                break;
+            }
+
+            if (buffer[0] == 'K' && buffer[1] == 'N') {
+                continue;
+            }
+	    //wav_rx.write_pcm_s16le(buffer, BUFFER_SIZE);
+            blk_id++;
+            if ((blk_id % 25u) == 0u) { // ~2.1 сек при 12кГц и 1024 семпла
+                dump_s16_stats_rx(blk_id, (const int16_t*)buffer, (size_t)(BUFFER_SIZE / 2), kFs);
+            }
+
+            const int channels = 1;
+            const int frames = BUFFER_SIZE / (2 * channels);
+            dac.push_frames((const int16_t *)buffer, (size_t)frames, channels);
+        }
+	//wav_rx.close();	
+        dac.stop();
+        ::close(newsockfd);
+        std::memset(buffer, 0, BUFFER_SIZE);
+
+        digitalWrite(RPI_PTT_GPIO, LOW);
+
+        if (digitalRead(RPI_COR_GPIO) == LOW) {
+            break;
+        }
+    }
+
+    digitalWrite(RPI_PTT_GPIO, LOW);
+    ::close(sockfd);
 }
 

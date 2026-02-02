@@ -2,7 +2,12 @@
 // FIX (только то, что про частоту/тайминг):
 //  - Убраны (закомментированы) тяжёлые принты в аудиопетле
 //  - Добавлены SCHED_FIFO + mlockall для снижения джиттера
-// Остальное оставлено как у тебя.
+// DEBUG:
+//  - Раз в ~2 сек печатает статистику по S16 пакету + raw_u12 min/max/span по пакету
+//  - Раз в ~1 сек печатает raw_u12 min/max/span за последнюю секунду
+// WAV DUMP:
+//  - Пишет то, что реально уходит по сети (S16LE) в "napi_tx.wav" в текущей директории
+//  - Важно: close() вызывается ДО usleep(), чтобы заголовок WAV всегда успевал обновиться
 
 #include "TxRx.h"
 
@@ -174,7 +179,6 @@ inline uint16_t adc_read_u12(int spi_fd, spi_ioc_transfer &tr, uint8_t rx[2], Gp
 static void enable_realtime_best_effort() {
     // lock memory to avoid page faults during streaming
     if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
-        // не фейлим — просто предупреждаем
         std::fprintf(stderr, "[TX] mlockall failed: %s\n", std::strerror(errno));
     }
 
@@ -185,7 +189,7 @@ static void enable_realtime_best_effort() {
         std::fprintf(stderr, "[TX] sched_setscheduler(SCHED_FIFO) failed: %s\n", std::strerror(errno));
     }
 
-    // Optional: pin to CPU0 (часто помогает)
+    // Optional: pin to CPU0
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(0, &set);
@@ -194,17 +198,122 @@ static void enable_realtime_best_effort() {
     }
 }
 
+// ---------- DEBUG helpers ----------
+static void dump_s16_stats_tx(uint32_t pkt_id,
+                              const int16_t* s, size_t n, uint32_t fs_hz,
+                              uint16_t raw_min_u12, uint16_t raw_max_u12)
+{
+    if (!s || n == 0) return;
+
+    int16_t mn = s[0], mx = s[0];
+    int64_t sum = 0;
+    double sumsq = 0.0;
+    size_t zeros = 0, clip = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        int16_t v = s[i];
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+        sum += v;
+        sumsq += (double)v * (double)v;
+        if (v == 0) zeros++;
+        if (v == INT16_MAX || v == INT16_MIN) clip++;
+    }
+
+    double mean = (double)sum / (double)n;
+    double rms  = std::sqrt(sumsq / (double)n);
+    double pk   = std::max(std::abs((int)mn), std::abs((int)mx));
+
+    char first[256];
+    int off = 0;
+    off += std::snprintf(first + off, sizeof(first) - (size_t)off, "[");
+    size_t show = (n < 10) ? n : 10;
+    for (size_t i = 0; i < show; ++i) {
+        off += std::snprintf(first + off, sizeof(first) - (size_t)off,
+                             "%d%s", (int)s[i], (i + 1 == show) ? "]" : ",");
+        if (off >= (int)sizeof(first)) break;
+    }
+
+    std::fprintf(stderr,
+                 "[TX] pkt=%u n=%zu fs=%u raw_u12[min=%u max=%u span=%d] "
+                 "s16[min=%d max=%d mean=%.1f rms=%.1f pk=%.0f zeros=%zu clip=%zu] first=%s\n",
+                 pkt_id, n, fs_hz,
+                 raw_min_u12, raw_max_u12, (int)raw_max_u12 - (int)raw_min_u12,
+                 (int)mn, (int)mx, mean, rms, pk, zeros, clip, first);
+}
+
+// ---------- WAV writer ----------
+struct WavWriter {
+    FILE* f{nullptr};
+    uint32_t data_bytes{0};
+    uint32_t sample_rate{12000};
+    uint16_t channels{1};
+    uint16_t bits_per_sample{16};
+
+    static void write_u32_le(FILE* fp, uint32_t v) {
+        uint8_t b[4] = {(uint8_t)(v), (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+        fwrite(b, 1, 4, fp);
+    }
+    static void write_u16_le(FILE* fp, uint16_t v) {
+        uint8_t b[2] = {(uint8_t)(v), (uint8_t)(v >> 8)};
+        fwrite(b, 1, 2, fp);
+    }
+
+    bool open_new(const char* path, uint32_t sr, uint16_t ch=1, uint16_t bps=16) {
+        close();
+        sample_rate = sr;
+        channels = ch;
+        bits_per_sample = bps;
+        data_bytes = 0;
+
+        f = fopen(path, "wb");
+        if (!f) return false;
+
+        static char buf[1 << 20];
+        setvbuf(f, buf, _IOFBF, sizeof(buf));
+
+        fwrite("RIFF", 1, 4, f);          write_u32_le(f, 0);
+        fwrite("WAVE", 1, 4, f);
+
+        fwrite("fmt ", 1, 4, f);          write_u32_le(f, 16);
+        write_u16_le(f, 1);               // PCM
+        write_u16_le(f, channels);
+        write_u32_le(f, sample_rate);
+        uint32_t byte_rate = sample_rate * channels * (bits_per_sample / 8);
+        write_u32_le(f, byte_rate);
+        uint16_t block_align = channels * (bits_per_sample / 8);
+        write_u16_le(f, block_align);
+        write_u16_le(f, bits_per_sample);
+
+        fwrite("data", 1, 4, f);          write_u32_le(f, 0);
+        return true;
+    }
+
+    void write_pcm_s16le(const void* pcm, size_t bytes) {
+        if (!f || !pcm || bytes == 0) return;
+        fwrite(pcm, 1, bytes, f);
+        data_bytes += (uint32_t)bytes;
+    }
+
+    void close() {
+        if (!f) return;
+        uint32_t riff_size = 36u + data_bytes;
+        fseek(f, 4, SEEK_SET);   write_u32_le(f, riff_size);
+        fseek(f, 40, SEEK_SET);  write_u32_le(f, data_bytes);
+        fflush(f);
+        fclose(f);
+        f = nullptr;
+    }
+};
+
 } // namespace
 
 void audioTxEth_PI(unsigned char *buffer, std::atomic<bool> &running) {
     (void)buffer;
 
-    if (gpio_get_ptt_level() != 0) return;
     if (kFs == 0) { std::fprintf(stderr, "[TX] Invalid fs=%u\n", kFs); return; }
 
-    // NEW: reduce jitter
     enable_realtime_best_effort();
-
     gpio_set_activity_led(true);
 
     int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -252,25 +361,28 @@ void audioTxEth_PI(unsigned char *buffer, std::atomic<bool> &running) {
 
     std::vector<int16_t> out(kSamplesPerPacket);
 
-    // meter raw (оставил, но можно тоже выключить)
+    /*WavWriter wav_tx;
+    if (!wav_tx.open_new("napi_tx.wav", kFs, 1, 16)) {
+        std::perror("fopen napi_tx.wav");
+    }
+    */
+    // meter raw
     uint16_t minv = 4095, maxv = 0;
     uint64_t last_meter_ns = now_ns();
 
-    // eff fs (оставил, но можно тоже выключить)
+    // eff fs (оставлено, но печать выключена)
     uint64_t eff_last_ns = now_ns();
     uint64_t eff_samples = 0;
 
     uint32_t pkt_id = 0;
 
-    // std::fprintf(stderr, "[TX] start fs=%u, samples/packet=%zu, packet_time=%.3f ms\n",
-    //              kFs, kSamplesPerPacket, 1000.0 * (double)kSamplesPerPacket / (double)kFs);
-
     while (running && gpio_get_ptt_level() == 0) {
-        // если мы заметно отстали — не "догоняем", а пересинхронизируемся
         uint64_t now0 = now_ns();
         if (now0 > t_next + period_ns * 4) {
             t_next = now0;
         }
+
+        uint16_t pkt_min_u12 = 4095, pkt_max_u12 = 0;
 
         for (size_t i = 0; i < kSamplesPerPacket; ++i) {
             t_next += period_ns;
@@ -280,6 +392,8 @@ void audioTxEth_PI(unsigned char *buffer, std::atomic<bool> &running) {
 
             if (raw < minv) minv = raw;
             if (raw > maxv) maxv = raw;
+            if (raw < pkt_min_u12) pkt_min_u12 = raw;
+            if (raw > pkt_max_u12) pkt_max_u12 = raw;
 
             float x = ((int)raw - 2048) / 2048.0f;
             x = hpf1_run(hpf, x) * kRecordGain;
@@ -292,25 +406,25 @@ void audioTxEth_PI(unsigned char *buffer, std::atomic<bool> &running) {
 
         pkt_id++;
 
-        // ТЯЖЁЛЫЕ ПРИНТЫ — ВЫКЛЮЧЕНО
-        // dump_packet_stats_tx(pkt_id, out.data(), out.size());
+        if ((pkt_id % 25u) == 0u) {
+            dump_s16_stats_tx(pkt_id, out.data(), out.size(), kFs, pkt_min_u12, pkt_max_u12);
+        }
 
-        // meter раз в 1 сек — можно оставить (лёгкий), но тоже можно выключить
         uint64_t now = now_ns();
         if (now - last_meter_ns > 1000000000ull) {
-            // std::fprintf(stderr, "[TX] ADC raw_u12[min=%4u max=%4u]\n", minv, maxv);
+            std::fprintf(stderr, "[TX] raw_u12 range over last ~1s: min=%u max=%u (span=%d)\n",
+                         minv, maxv, (int)maxv - (int)minv);
             minv = 4095; maxv = 0;
             last_meter_ns = now;
         }
 
-        // eff fs раз в 1 сек — можно оставить, но пока выключим
         if (now - eff_last_ns > 1000000000ull) {
-            // double dt = (double)(now - eff_last_ns) / 1e9;
-            // double eff = (dt > 0) ? ((double)eff_samples / dt) : 0.0;
-            // std::fprintf(stderr, "[TX] EFF_FS=%.1f (target %u)\n", eff, kFs);
             eff_samples = 0;
             eff_last_ns = now;
         }
+
+        // WAV dump: то, что реально уходит по сети
+        //wav_tx.write_pcm_s16le(out.data(), out.size() * sizeof(int16_t));
 
         if (!send_all(sockfd, (const uint8_t*)out.data(), out.size() * sizeof(int16_t))) break;
         if (gpio_get_ptt_level() != 0) break;
@@ -320,6 +434,9 @@ void audioTxEth_PI(unsigned char *buffer, std::atomic<bool> &running) {
     ::close(spi_fd);
     ::close(sockfd);
     gpio_set_activity_led(false);
+
+    // ВАЖНО: сначала закрыть WAV (обновит заголовок), потом уже sleep/retry
+    //wav_tx.close();
+
     usleep(kRetryDelayUsec);
 }
-

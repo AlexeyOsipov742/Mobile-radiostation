@@ -24,15 +24,15 @@
 #include <thread>
 #include <mutex>
 
-#define SERVER_IP "10.10.1.140"
-//#define SERVER_IP "192.168.31.22"
+//#define SERVER_IP "10.10.1.149"
+#define SERVER_IP "192.168.31.20"
 #define DEV_DIR "/dev"
 #define BUFFER_SIZE 2048
 #define PERIODS 1024
 #define TTY "/dev/ttyUSB0"
 #define PORT 5678
 #define CHANNELS 1
-#define SAMPLERATE 12000
+#define SAMPLERATE 8000
 #define RESAMPLE 1
 #define CAPTURE_DEV "hw:0,6"
 #define PLAYBACK_DEV "hw:0,0"
@@ -62,7 +62,7 @@
 // Локальная частота для ЦАП/АЦП (в тестах хорошо работает 11025/12000).
 // По сети оставляем 44100 (SAMPLERATE), а на TX делаем upsample x4.
 #ifndef NAPI_LOCAL_FS
-#define NAPI_LOCAL_FS 12000
+#define NAPI_LOCAL_FS 8000
 #endif
 
 // Сколько каналов приходит по сети в режиме RX (от RaspberryPi).
@@ -77,6 +77,8 @@ int RxEth(unsigned char * buffer);
 void TxEth(unsigned char * buffer);
 void audioTxEth_PI(unsigned char * buffer, std::atomic<bool> &running);
 void audioRxEth_PI(unsigned char * buffer, std::atomic<bool> &running);
+void audioTxEth_client(unsigned char * buffer, std::atomic<bool> &running);
+void audioRxEth_client(unsigned char * buffer, std::atomic<bool> &running);
 char * find_ttyUSB_port();
 void audio(std::atomic<bool> &running);
 void command(std::atomic<bool> &running);
