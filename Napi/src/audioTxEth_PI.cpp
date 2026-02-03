@@ -246,7 +246,7 @@ static void dump_s16_stats_tx(uint32_t pkt_id,
 struct WavWriter {
     FILE* f{nullptr};
     uint32_t data_bytes{0};
-    uint32_t sample_rate{12000};
+    uint32_t sample_rate{8000};
     uint16_t channels{1};
     uint16_t bits_per_sample{16};
 
