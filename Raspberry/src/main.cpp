@@ -1,43 +1,27 @@
 #include "TxRx.h"
+#include "buttons_client.h"  // ты положил в include
 
 int main() {
-    unsigned char *buffer = (unsigned char *)std::malloc(BUFFER_SIZE * sizeof(*buffer));
-    if (!buffer) {
-        std::perror("malloc");
+    if (!gpio_init()) {
+        std::cerr << "Failed to initialize GPIO. Exiting.\n";
         return 1;
     }
 
-    // BCM numbering
-    if (wiringPiSetupGpio() == -1) {
-        std::perror("wiringPiSetupGpio");
-        std::free(buffer);
-        return 1;
-    }
+    signal(SIGINT, signal_handler);
 
-    // COR input (active LOW)
-    pinMode(RPI_COR_GPIO, INPUT);
-    pullUpDnControl(RPI_COR_GPIO, PUD_UP);
+    std::thread audioThread(audio, std::ref(audio_running));
+    std::thread cmdThread(command, std::ref(cmd_running));
 
-    // PTT output (active HIGH)
-    pinMode(RPI_PTT_GPIO, OUTPUT);
-    digitalWrite(RPI_PTT_GPIO, LOW);
+    // Кнопки останавливаем тем же cmd_running (SIGINT уже должен его сбрасыват�
 
-    // CS lines for MCP4822/MCP3201 (active LOW)
-    pinMode(RPI_DAC_CS_GPIO, OUTPUT);
-    digitalWrite(RPI_DAC_CS_GPIO, HIGH);
-    pinMode(RPI_ADC_CS_GPIO, OUTPUT);
-    digitalWrite(RPI_ADC_CS_GPIO, HIGH);
+    std::thread btnThread(buttons_client, std::ref(cmd_running));
+    audioThread.join();
+    cmdThread.join();
+    btnThread.join();
 
-    while (1) {
-        if (digitalRead(RPI_COR_GPIO) == LOW) {
-            // Radio receives (COR active): sample from ADC and stream to NaPi
-            audioTxEth_PI(buffer);
-        } else {
-            // No RX from air: wait for NaPi TX, key PTT and play to DAC
-            audioRxEth_PI(buffer);
-        }
-    }
+    gpio_cleanup();
 
-    std::free(buffer);
+    std::cout << "All threads finished.\n";
     return 0;
 }
+

@@ -1,190 +1,341 @@
+// audioTxEth_client.cpp (NaPi) — MCP3201 -> TCP (mono S16LE @ NAPI_LOCAL_FS)
+// FIX: debounce отпускания PTT внутри TX, чтобы глитчи не рвали TCP-сессию.
+
 #include "TxRx.h"
-#include <alsa/pcm.h>
 
-//#define SERVER_IP "192.168.1.112" // IP адрес Митино
-//#define SERVER_IP "192.168.0.119" // IP адрес дом
-#define SERVER_IP "10.10.1.62"  // IP адрес работа
+#include <atomic>
+#include <arpa/inet.h>
+#include <cerrno>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fcntl.h>
+#include <linux/spi/spidev.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <time.h>
+#include <unistd.h>
+#include <vector>
 
-void audioTxEth_client(unsigned char *buffer) {
-    // Параметры для захвата звука
-    snd_pcm_t *capture_handle;
-    snd_pcm_hw_params_t *hw_params;
+#include <sched.h>
+#include <sys/mman.h>
 
-    // Создание сокета для передачи данных
-    int sockfd;
-    struct sockaddr_in serv_addr;
+#if __has_include(<gpiod.h>)
+#include <gpiod.h>
+#elif __has_include(<gpiod/gpiod.h>)
+#include <gpiod/gpiod.h>
+#else
+extern "C" {
+struct gpiod_chip;
+struct gpiod_line;
+typedef struct gpiod_chip gpiod_chip;
+typedef struct gpiod_line gpiod_line;
+gpiod_chip *gpiod_chip_open(const char *path);
+void gpiod_chip_close(gpiod_chip *chip);
+gpiod_line *gpiod_chip_get_line(gpiod_chip *chip, unsigned int offset);
+int gpiod_line_request_output(gpiod_line *line, const char *consumer, int default_val);
+void gpiod_line_release(gpiod_line *line);
+int gpiod_line_set_value(gpiod_line *line, int value);
+}
+#endif
 
-    unsigned int resample = 1;
-    unsigned int sampleRate = 44100;
-    long int dataCapacity = 0;
-    int channels = 2;
-    snd_pcm_uframes_t local_buffer = BUFFER_SIZE;
-    snd_pcm_uframes_t local_periods = PERIODS;
-    
-    
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("Socket creation error");
+namespace {
+
+constexpr uint32_t kFs = static_cast<uint32_t>(NAPI_LOCAL_FS);
+static_assert(BUFFER_SIZE % 2 == 0, "BUFFER_SIZE must be even");
+constexpr size_t kSamplesPerPacket = BUFFER_SIZE / sizeof(int16_t);
+
+constexpr float    kRecordGain   = 1.0f;
+constexpr float    kHpfCutoffHz  = 20.0f;
+constexpr uint32_t kRetryDelayUsec = 10'000u;
+constexpr float    kPiF = 3.14159265358979323846f;
+
+// отпускание PTT считаем реальным только если держится HIGH >= debounce
+constexpr uint64_t kPttReleaseDebounceNs = 40ull * 1000000ull; // 40ms
+
+inline uint16_t mcp3201_parse_u12(const uint8_t rx[2]) {
+  return static_cast<uint16_t>(((rx[0] & 0x1F) << 7) | ((rx[1] >> 1) & 0x7F));
+}
+
+inline uint64_t now_ns() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+inline void ts_from_ns(uint64_t tns, timespec *ts) {
+  ts->tv_sec  = static_cast<time_t>(tns / 1000000000ull);
+  ts->tv_nsec = static_cast<long>(tns % 1000000000ull);
+}
+
+inline void sleep_until_abs(uint64_t t_abs_ns) {
+  uint64_t now = now_ns();
+  if (now + 50'000ull < t_abs_ns) {
+    timespec ts{};
+    ts_from_ns(t_abs_ns - 20'000ull, &ts);
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr);
+  }
+  while (now_ns() < t_abs_ns) { /* spin */ }
+}
+
+// ---- DC-blocker ----
+struct Hpf1 { float R{}, x1{}, y1{}; };
+
+inline void hpf1_init(Hpf1 &h, float fs, float fc) {
+  float R = std::exp(-2.0f * kPiF * fc / fs);
+  if (R < 0.0f) R = 0.0f;
+  if (R > 0.9999f) R = 0.9999f;
+  h.R = R; h.x1 = 0.0f; h.y1 = 0.0f;
+}
+inline float hpf1_run(Hpf1 &h, float x) {
+  float y = x - h.x1 + h.R * h.y1;
+  h.x1 = x; h.y1 = y;
+  return y;
+}
+
+// ---- GPIO CS ----
+struct GpioCs {
+  gpiod_chip *chip{nullptr};
+  gpiod_line *line{nullptr};
+
+  bool open(const char *chip_path, unsigned offset, const char *consumer) {
+    chip = gpiod_chip_open(chip_path);
+    if (!chip) { std::fprintf(stderr, "gpiod_chip_open(%s) failed: %s\n", chip_path, std::strerror(errno)); return false; }
+    line = gpiod_chip_get_line(chip, offset);
+    if (!line) { std::fprintf(stderr, "gpiod_chip_get_line(%s,%u) failed: %s\n", chip_path, offset, std::strerror(errno)); gpiod_chip_close(chip); chip=nullptr; return false; }
+    if (gpiod_line_request_output(line, consumer, 1) != 0) { std::fprintf(stderr, "gpiod_line_request_output(%s,%u) failed: %s\n", chip_path, offset, std::strerror(errno)); gpiod_chip_close(chip); chip=nullptr; line=nullptr; return false; }
+    (void)gpiod_line_set_value(line, 1);
+    return true;
+  }
+
+  inline void set(int v) { if (line) (void)gpiod_line_set_value(line, v); }
+
+  void close() {
+    if (line) { (void)gpiod_line_set_value(line, 1); gpiod_line_release(line); line=nullptr; }
+    if (chip) { gpiod_chip_close(chip); chip=nullptr; }
+  }
+};
+
+int open_spi(const char *dev, uint32_t &hz_inout) {
+  int fd = ::open(dev, O_RDWR);
+  if (fd < 0) { std::perror("open spidev"); return -1; }
+
+  uint8_t mode = static_cast<uint8_t>(SPI_MODE_0);
+  uint8_t bpw  = 8;
+
+  if (ioctl(fd, SPI_IOC_WR_MODE, &mode) == -1) { std::perror("SPI_IOC_WR_MODE"); ::close(fd); return -1; }
+  if (ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bpw) == -1) { std::perror("SPI_IOC_WR_BITS_PER_WORD"); ::close(fd); return -1; }
+
+  uint32_t hz = hz_inout ? hz_inout : 1'000'000u;
+  if (ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &hz) == -1) { std::perror("SPI_IOC_WR_MAX_SPEED_HZ"); ::close(fd); return -1; }
+
+  uint32_t rd = 0;
+  if (ioctl(fd, SPI_IOC_RD_MAX_SPEED_HZ, &rd) == -1) rd = hz;
+  hz_inout = (rd ? rd : hz);
+  return fd;
+}
+
+bool send_all(int sockfd, const uint8_t *data, size_t bytes) {
+  size_t sent = 0;
+  while (sent < bytes) {
+    ssize_t n = ::send(sockfd, data + sent, bytes - sent, 0);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      std::perror("send");
+      return false;
+    }
+    if (n == 0) return false;
+    sent += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+inline uint16_t adc_read_u12(int spi_fd, spi_ioc_transfer &tr, uint8_t rx[2], GpioCs &cs) {
+  cs.set(0);
+  int ret = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr);
+  cs.set(1);
+  if (ret < 0) { std::perror("SPI_IOC_MESSAGE (ADC)"); return 2048; }
+  return mcp3201_parse_u12(rx);
+}
+
+static void enable_realtime_best_effort() {
+  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+    std::fprintf(stderr, "[TX] mlockall failed: %s\n", std::strerror(errno));
+  }
+  sched_param sp{};
+  sp.sched_priority = 80;
+  if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+    std::fprintf(stderr, "[TX] sched_setscheduler(SCHED_FIFO) failed: %s\n", std::strerror(errno));
+  }
+}
+
+static void dump_s16_stats_tx(uint32_t pkt_id,
+                              const int16_t* s, size_t n, uint32_t fs_hz,
+                              uint16_t raw_min_u12, uint16_t raw_max_u12)
+{
+  if (!s || n == 0) return;
+  int16_t mn = s[0], mx = s[0];
+  int64_t sum = 0;
+  double sumsq = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    int16_t v = s[i];
+    mn = std::min(mn, v);
+    mx = std::max(mx, v);
+    sum += v;
+    sumsq += (double)v * (double)v;
+  }
+  double mean = (double)sum / (double)n;
+  double rms  = std::sqrt(sumsq / (double)n);
+  std::fprintf(stderr,
+               "[TX] pkt=%u n=%zu fs=%u raw_u12[min=%u max=%u span=%d] s16[min=%d max=%d mean=%.1f rms=%.1f]\n",
+               pkt_id, n, fs_hz,
+               raw_min_u12, raw_max_u12, (int)raw_max_u12 - (int)raw_min_u12,
+               (int)mn, (int)mx, mean, rms);
+}
+
+} // namespace
+
+void audioTxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
+  (void)buffer;
+
+  if (kFs == 0) { std::fprintf(stderr, "[TX] Invalid fs=%u\n", kFs); return; }
+
+  enable_realtime_best_effort();
+  gpio_set_activity_led(true);
+
+  int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (sockfd < 0) { std::perror("socket"); gpio_set_activity_led(false); return; }
+  int yes = 1;
+  (void)setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+  sockaddr_in serv{};
+  serv.sin_family = AF_INET;
+  serv.sin_port   = htons(PORT);
+  serv.sin_addr.s_addr = inet_addr(SERVER_IP);
+
+  if (::connect(sockfd, reinterpret_cast<sockaddr *>(&serv), sizeof(serv)) < 0) {
+    std::perror("connect");
+    ::close(sockfd);
+    gpio_set_activity_led(false);
+    usleep(kRetryDelayUsec);
+    return;
+  }
+
+  uint32_t spi_hz = 1'000'000u;
+  int spi_fd = open_spi(NAPI_SPI_DEV, spi_hz);
+  if (spi_fd < 0) { ::close(sockfd); gpio_set_activity_led(false); usleep(kRetryDelayUsec); return; }
+
+  GpioCs cs;
+  if (!cs.open(NAPI_ADC_CS_CHIP, (unsigned)NAPI_ADC_CS_LINE, "napi-adc-cs")) {
+    ::close(spi_fd); ::close(sockfd); gpio_set_activity_led(false); usleep(kRetryDelayUsec); return;
+  }
+
+  uint8_t txb[2] = {0, 0};
+  uint8_t rxb[2] = {0, 0};
+  spi_ioc_transfer tr{};
+  tr.tx_buf = reinterpret_cast<uintptr_t>(txb);
+  tr.rx_buf = reinterpret_cast<uintptr_t>(rxb);
+  tr.len = 2;
+  tr.speed_hz = spi_hz;
+  tr.bits_per_word = 8;
+  tr.cs_change = 0;
+
+  Hpf1 hpf{};
+  hpf1_init(hpf, (float)kFs, kHpfCutoffHz);
+
+  const uint64_t period_ns = (uint64_t)llround(1e9 / (double)kFs);
+  uint64_t t_next = now_ns();
+
+  std::vector<int16_t> out(kSamplesPerPacket);
+
+  // meter raw
+  uint16_t minv = 4095, maxv = 0;
+  uint64_t last_meter_ns = now_ns();
+
+  uint32_t pkt_id = 0;
+
+  // debounce отпускания
+  uint64_t release_start_ns = 0;
+
+  auto ptt_is_pressed = []() -> bool {
+    return (gpio_get_ptt_level() == 0); // 0=TX (нажато)
+  };
+
+  // если уже отпущено — не шлём
+  if (!ptt_is_pressed()) {
+    cs.close();
+    ::close(spi_fd);
+    ::close(sockfd);
+    gpio_set_activity_led(false);
+    usleep(kRetryDelayUsec);
+    return;
+  }
+
+  while (running.load()) {
+    printf("AUDIO TX CYCLE STARTED\n");
+    // если стало не нажатым — запускаем debounce
+    if (!ptt_is_pressed()) {
+      uint64_t now = now_ns();
+      if (release_start_ns == 0) release_start_ns = now;
+      if (now - release_start_ns >= kPttReleaseDebounceNs) {
+        std::fprintf(stderr, "[TX] BREAK: ptt released stable\n");
+        break;
+      }
+      // пока дребезжит — просто продолжаем (не рвём соединение)
+      continue;
+    } else {
+      release_start_ns = 0;
     }
 
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
-    serv_addr.sin_addr.s_addr = inet_addr(SERVER_IP); // IP
+    // если мы заметно отстали — пересинхронизируемся
+    uint64_t now0 = now_ns();
+    if (now0 > t_next + period_ns * 4) t_next = now0;
 
-    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Connection failed");
+    uint16_t pkt_min_u12 = 4095, pkt_max_u12 = 0;
+
+    for (size_t i = 0; i < kSamplesPerPacket; ++i) {
+      t_next += period_ns;
+      sleep_until_abs(t_next);
+
+      uint16_t raw = adc_read_u12(spi_fd, tr, rxb, cs);
+      minv = std::min(minv, raw);
+      maxv = std::max(maxv, raw);
+      pkt_min_u12 = std::min(pkt_min_u12, raw);
+      pkt_max_u12 = std::max(pkt_max_u12, raw);
+
+      float x = ((int)raw - 2048) / 2048.0f;
+      x = hpf1_run(hpf, x) * kRecordGain;
+      if (x > 0.999f) x = 0.999f;
+      if (x < -0.999f) x = -0.999f;
+      out[i] = (int16_t)lrintf(x * 32767.0f);
     }
 
-    // Открываем PCM устройство
-    if (snd_pcm_open(&capture_handle, "hw:0,6", SND_PCM_STREAM_CAPTURE, 0) < 0) {
-        perror("Cannot open audio device");
-        close(sockfd);
-        return;
+    pkt_id++;
+    if ((pkt_id % 25u) == 0u) {
+      dump_s16_stats_tx(pkt_id, out.data(), out.size(), kFs, pkt_min_u12, pkt_max_u12);
     }
 
-    // Выделение памяти для hw_params с использованием malloc
-    if (snd_pcm_hw_params_malloc(&hw_params) < 0) {
-        perror("Cannot allocate hardware parameters");
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
+    uint64_t now = now_ns();
+    if (now - last_meter_ns > 1000000000ull) {
+      std::fprintf(stderr, "[TX] raw_u12 range over last ~1s: min=%u max=%u (span=%d)\n",
+                   minv, maxv, (int)maxv - (int)minv);
+      minv = 4095; maxv = 0;
+      last_meter_ns = now;
     }
 
-    if (snd_pcm_hw_params_any(capture_handle, hw_params) < 0) {
-        perror("Cannot configure this PCM device");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
+    if (!send_all(sockfd, (const uint8_t*)out.data(), out.size() * sizeof(int16_t))) {
+      std::fprintf(stderr, "[TX] send_all failed\n");
+      break;
     }
-    
-    snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
+  }
 
-    printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
-
-    if (snd_pcm_hw_params_set_format(capture_handle, hw_params, SND_PCM_FORMAT_S16_LE) < 0) {
-        perror("Cannot set sample format");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-    if (snd_pcm_hw_params_set_access (capture_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
-        perror("Cannot set access rate");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-    if (snd_pcm_hw_params_set_channels(capture_handle, hw_params, channels) < 0) {
-            perror("Cannot set channel count");
-            snd_pcm_hw_params_free(hw_params);
-            snd_pcm_close(capture_handle);
-            close(sockfd);
-            return;
-        }
-
-    if (snd_pcm_hw_params_set_rate_near (capture_handle, hw_params, &sampleRate, 0) < 0) {
-        perror("Cannot set rate near");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-    if (snd_pcm_hw_params_set_rate_resample(capture_handle, hw_params, resample) < 0) {
-        perror("Cannot set sample rate");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-    if (snd_pcm_hw_params_set_buffer_size_near(capture_handle, hw_params, &local_buffer) < 0) {
-        perror("Cannot set buffer size near");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-    if (snd_pcm_hw_params_set_period_size_near(capture_handle, hw_params, &local_periods, 0) < 0) {
-        perror("Cannot set period size near");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-    if (snd_pcm_hw_params(capture_handle, hw_params) < 0) {
-        perror("Cannot set hardware parameters");
-        snd_pcm_hw_params_free(hw_params);
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-
-    // Освобождение выделенной памяти
-    snd_pcm_hw_params_free(hw_params);
-
-
-    //snd_pcm_hw_params_get_buffer_size(hw_params, &local_buffer);
-    //snd_pcm_hw_params_get_period_size(hw_params, &local_periods, 0);
-
-    printf("Buffer size: %lu, Period size: %lu\n", local_buffer, local_periods);
-
-    // Подготовка устройства к воспроизведению
-    if (snd_pcm_prepare(capture_handle) < 0) {
-        perror("Cannot prepare audio interface for use");
-        snd_pcm_close(capture_handle);
-        close(sockfd);
-        return;
-    }
-
-
-   // Основной цикл для захвата и передачи данных
-    while(1) {
-        /*if (kbhit()) {
-            char key = getchar();  // Получаем символ
-            if (key != 'p') {
-                break;  // Прерываем цикл, если не нажата клавиша 'p'
-            }
-        }*/
-
-        int frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE / (channels * 2));
-        //system("gpio readall > gpio.txt");
-        //printf("sus6.5\n");
-        if (frames < 0) {
-            fprintf(stderr, "Read error: %s\n", snd_strerror(frames));  // Выводим точную ошибку ALSA
-            snd_pcm_prepare(capture_handle);  // Попробуем восстановить поток
-            continue;
-        }
-
-        /*for (int i = 0; i < BUFFER_SIZE; i++) {
-            printf("%02x", buffer[i]);
-            if (((i + 1) % 16) == 0)
-                printf("\n");
-        } */                                          //Отладка
-    
-        // Передаем данные по сети
-        //ssize_t bytes_sent = send(sockfd, buffer, frames * channels * 2, 0);
-        ssize_t bytes_sent = send(sockfd, buffer, BUFFER_SIZE, 0);  
-        if (bytes_sent < 0) {
-            perror("Send error");
-            close(sockfd);
-            snd_pcm_drop(capture_handle);
-            snd_pcm_close(capture_handle);
-            fprintf(stderr, "Connection lost. Reconnecting...\n");
-            break;
-        }
-        dataCapacity += bytes_sent;
-        //printf("\ndataCapacity: %ld\n\n", dataCapacity);
-    }
-
-    snd_pcm_drop(capture_handle);
-    snd_pcm_close(capture_handle);
-    close(sockfd);
+  cs.close();
+  ::close(spi_fd);
+  ::close(sockfd);
+  gpio_set_activity_led(false);
+  usleep(kRetryDelayUsec);
 }
