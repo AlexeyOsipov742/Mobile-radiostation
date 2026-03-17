@@ -5,7 +5,10 @@
 
 int main() {
     unsigned char *buffer = (unsigned char *)std::malloc(BUFFER_SIZE);
-    if (!buffer) { std::perror("malloc"); return 1; }
+    if (!buffer) {
+        std::perror("malloc");
+         return 1;
+    }
 
     if (!gpio_init()) {
         std::fprintf(stderr, "gpio_init failed\n");

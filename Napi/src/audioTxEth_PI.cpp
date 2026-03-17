@@ -176,7 +176,7 @@ void audioTxEth_PI(unsigned char *buffer) {
         return;
     }
 
-    enable_realtime_best_effort();
+    //enable_realtime_best_effort();
 
     // --- TCP connect to NaPi ---
     int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);

@@ -4,7 +4,7 @@
 //
 // Defaults are hardcoded for your setup:
 //   I2C: /dev/i2c-1 addr 0x26
-//   IRQ: gpiochip0 line 26 (falling edge, MCP INT active-low)
+//   IRQ: gpiochip2 line 7 (GPIO2_A7, falling edge, MCP INT active-low)
 //   TCP port: 7778
 //
 // This file provides:  void buttons_client(std::atomic<bool>& running);
@@ -169,8 +169,8 @@ void buttons_client(std::atomic<bool>& running) {
     // ---- defaults (your setup) ----
     const char* i2c_dev   = "/dev/i2c-1";
     const int   i2c_addr  = 0x26;
-    const char* gpiochip  = "gpiochip0";
-    const int   irq_line  = 26;
+    const char* gpiochip  = "gpiochip2";
+    const int   irq_line  = 7;
     const int   tcp_port  = 7778;
 
     // --- open i2c ---
@@ -311,4 +311,3 @@ void buttons_client(std::atomic<bool>& running) {
     std::printf("[BTN] stopped\n");
     std::fflush(stdout);
 }
-

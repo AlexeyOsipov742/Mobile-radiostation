@@ -1,0 +1,25 @@
+# build directories
+build/
+**/build/
+
+# binaries / build outputs (часто без расширения в Linux)
+*.o
+*.a
+*.so
+*.elf
+*.bin
+*.out
+*.exe
+
+# editor swap/backup
+*.swp
+*.swo
+*.bak
+*~
+
+# audio/test artifacts
+*.wav
+
+# your weird encoded excel duplicates
+#U*.xlsx
+

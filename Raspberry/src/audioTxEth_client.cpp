@@ -276,7 +276,6 @@ void audioTxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
   }
 
   while (running.load()) {
-    printf("AUDIO TX CYCLE STARTED\n");
     // если стало не нажатым — запускаем debounce
     if (!ptt_is_pressed()) {
       uint64_t now = now_ns();

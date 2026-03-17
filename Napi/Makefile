@@ -3,7 +3,7 @@ CXX = g++
 # Важно: используем std::thread -> нужен -pthread
 CXXFLAGS = -O2 -g -Wall -std=c++17 -pthread
 
-files = Rx.cpp Tx.cpp RxEth.cpp TxEth.cpp main.cpp audioRxEth_PI.cpp audioTxEth_PI.cpp gpio_control_rpi_gpiod.cpp uart_screen_forward.cpp uart_buttons_rx.cpp
+files = main.cpp audioRxEth_PI.cpp audioTxEth_PI.cpp gpio_control_rpi_gpiod.cpp uart_screen_forward.cpp uart_buttons_rx.cpp
 
 objects = $(files:.cpp=.o)
 
