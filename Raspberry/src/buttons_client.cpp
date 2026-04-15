@@ -4,7 +4,7 @@
 //
 // Defaults are hardcoded for your setup:
 //   I2C: /dev/i2c-1 addr 0x26
-//   IRQ: gpiochip0 line 26 (falling edge, MCP INT active-low)
+//   IRQ: gpiochip2 line 7 (falling edge, MCP INT active-low)
 //   TCP port: 7778
 //
 // This file provides:  void buttons_client(std::atomic<bool>& running);
@@ -42,6 +42,8 @@ enum : uint8_t {
     IODIRB   = 0x01,
     GPINTENA = 0x04,
     GPINTENB = 0x05,
+    DEFVALA  = 0x06,
+    DEFVALB  = 0x07,
     INTCONA  = 0x08,
     INTCONB  = 0x09,
     IOCON    = 0x0A, // also at 0x0B
@@ -57,7 +59,31 @@ static void hex_dump5(const uint8_t* p) {
     std::printf("%02X %02X %02X %02X %02X", p[0], p[1], p[2], p[3], p[4]);
 }
 
+static void clear_mcp_irq_latch(int fd) {
+    constexpr uint8_t kIntcapAReg = 0x10;
+    uint8_t a = 0, b = 0;
+    if (i2c_read_reg2(fd, kIntcapAReg, &a, &b) < 0) {
+        std::perror("[BTN] clear INTCAP");
+    }
+}
+
 struct Cmd5 { std::array<uint8_t,5> b; };
+
+static bool send_button_cmd_with_audio_mute(const Cmd5& cmd, int tcp_port) {
+    // Keep speaker muted while command is in flight and until receiver confirms it.
+    constexpr uint32_t kMuteUntilAckMs = 1300;
+    constexpr uint32_t kMuteTailMs = 60;
+    constexpr uint32_t kMuteFailMs = 220;
+
+    audio_mute_set_for_cmd_ms(kMuteUntilAckMs);
+    const bool ok = TxEthN(cmd.b.data(), cmd.b.size(), tcp_port);
+    if (ok) {
+        audio_mute_set_for_cmd_ms(kMuteTailMs);
+    } else {
+        audio_mute_set_for_cmd_ms(kMuteFailMs);
+    }
+    return ok;
+}
 
 struct ButtonAction {
     // what to send on press/release
@@ -149,18 +175,19 @@ static bool setup_mcp23017_irq(int fd) {
     if (i2c_write_reg(fd, GPPUA, 0xFF) < 0) return false;
     if (i2c_write_reg(fd, GPPUB, 0xFF) < 0) return false;
 
-    // IRQ on change (INTCON=0)
+    // Monitor all A pins (PA0..PA7) on any level change.
+    // B is disabled by default (not wired in current setup).
+    if (i2c_write_reg(fd, DEFVALA, 0xFF) < 0) return false;
+    if (i2c_write_reg(fd, DEFVALB, 0x00) < 0) return false;
     if (i2c_write_reg(fd, INTCONA, 0x00) < 0) return false;
     if (i2c_write_reg(fd, INTCONB, 0x00) < 0) return false;
 
-    // enable IRQ on all pins
+    // enable IRQ on all PAx, PBx disabled
     if (i2c_write_reg(fd, GPINTENA, 0xFF) < 0) return false;
-    if (i2c_write_reg(fd, GPINTENB, 0xFF) < 0) return false;
+    if (i2c_write_reg(fd, GPINTENB, 0x00) < 0) return false;
 
     // clear any pending IRQ
-    uint8_t dumpA=0, dumpB=0;
-    if (i2c_read_reg2(fd, INTCAPA, &dumpA, &dumpB) < 0) return false;
-    (void)dumpA; (void)dumpB;
+    clear_mcp_irq_latch(fd);  
 
     return true;
 }
@@ -169,8 +196,8 @@ void buttons_client(std::atomic<bool>& running) {
     // ---- defaults (your setup) ----
     const char* i2c_dev   = "/dev/i2c-1";
     const int   i2c_addr  = 0x26;
-    const char* gpiochip  = "gpiochip0";
-    const int   irq_line  = 26;
+    const char* gpiochip  = "gpiochip2";
+    const int   irq_line  = 7;
     const int   tcp_port  = 7778;
 
     // --- open i2c ---
@@ -205,6 +232,8 @@ void buttons_client(std::atomic<bool>& running) {
         ::close(fd);
         return;
     }
+    
+    clear_mcp_irq_latch(fd);
 
     std::printf("[BTN] MCP@0x%02X %s, IRQ on %s:%d -> NaPi:%d\n",
                 i2c_addr, i2c_dev, gpiochip, irq_line, tcp_port);
@@ -228,10 +257,15 @@ void buttons_client(std::atomic<bool>& running) {
         int rv = gpiod_line_event_wait(line, &to);
         if (!running.load()) break;
         if (rv < 0) { std::perror("[BTN] gpiod_line_event_wait"); break; }
-        if (rv == 0) continue;
-
-        gpiod_line_event ev{};
-        if (gpiod_line_event_read(line, &ev) < 0) { std::perror("[BTN] gpiod_line_event_read"); break; }
+        if (rv == 0) {
+            // Fallback: if INTA is already LOW, we may have missed the edge.
+            int lvl = gpiod_line_get_value(line);
+            if (lvl < 0) { std::perror("[BTN] gpiod_line_get_value"); continue; }
+            if (lvl != 0) continue;
+        } else {
+            gpiod_line_event ev{};
+            if (gpiod_line_event_read(line, &ev) < 0) { std::perror("[BTN] gpiod_line_event_read"); break; }
+        }
 
         uint8_t intfA=0, intfB=0, capA=0, capB=0;
         if (i2c_read_reg2(fd, INTFA, &intfA, &intfB) < 0) { std::perror("[BTN] read INTF"); break; }
@@ -257,14 +291,18 @@ void buttons_client(std::atomic<bool>& running) {
                     std::printf("[BTN] pin %d PRESSED -> ", pin);
                     hex_dump5(act->press->b.data());
                     std::printf("\n");
-                    (void)TxEthN(act->press->b.data(), 5, tcp_port);
+                    if (!send_button_cmd_with_audio_mute(*act->press, tcp_port)) {
+                        std::fprintf(stderr, "[BTN] TxEthN press failed (pin %d, port %d)\n", pin, tcp_port);
+                    }
                 }
             } else {
                 if (act->release) {
                     std::printf("[BTN] pin %d released -> ", pin);
                     hex_dump5(act->release->b.data());
                     std::printf("\n");
-                    (void)TxEthN(act->release->b.data(), 5, tcp_port);
+                    if (!send_button_cmd_with_audio_mute(*act->release, tcp_port)) {
+                        std::fprintf(stderr, "[BTN] TxEthN release failed (pin %d, port %d)\n", pin, tcp_port);
+                    }
                 }
             }
         }
@@ -289,14 +327,18 @@ void buttons_client(std::atomic<bool>& running) {
                     std::printf("[BTN] pin %d PRESSED -> ", pin);
                     hex_dump5(act->press->b.data());
                     std::printf("\n");
-                    (void)TxEthN(act->press->b.data(), 5, tcp_port);
+                    if (!send_button_cmd_with_audio_mute(*act->press, tcp_port)) {
+                        std::fprintf(stderr, "[BTN] TxEthN press failed (pin %d, port %d)\n", pin, tcp_port);
+                    }
                 }
             } else {
                 if (act->release) {
                     std::printf("[BTN] pin %d released -> ", pin);
                     hex_dump5(act->release->b.data());
                     std::printf("\n");
-                    (void)TxEthN(act->release->b.data(), 5, tcp_port);
+                    if (!send_button_cmd_with_audio_mute(*act->release, tcp_port)) {
+                        std::fprintf(stderr, "[BTN] TxEthN release failed (pin %d, port %d)\n", pin, tcp_port);
+                    }
                     }
             }
         }
@@ -311,4 +353,3 @@ void buttons_client(std::atomic<bool>& running) {
     std::printf("[BTN] stopped\n");
     std::fflush(stdout);
 }
-

@@ -351,9 +351,30 @@ private:
       t_next = now_ns();
     };
 
+    bool was_cmd_muted = false;
+
     while (running.load()) {
       if (need_reset.exchange(false, std::memory_order_acquire)) {
         reset_state();
+      }
+
+      // Hard command mute at DAC stage: guarantees silence even if queue already has audio.
+      const bool cmd_muted = audio_is_muted_for_cmd();
+      if (cmd_muted) {
+        if (!was_cmd_muted) {
+          q.clear();
+          primed = false;
+          env = 0.0f;
+          was_cmd_muted = true;
+        }
+        t_next += T;
+        busy_wait_to(t_next);
+        write_u12(2048); // analog mid (silence)
+        continue;
+      } else if (was_cmd_muted) {
+        // Leave mute cleanly: drop stale data and re-prime the renderer.
+        reset_state();
+        was_cmd_muted = false;
       }
 
       // прайминг: накопим немного входа, чтобы не сразу шуметь от голода
@@ -594,6 +615,11 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
 
       // отфильтровать управляющее "KN" (если оно реально прилетает в этот канал)
       if (buffer[0] == 'K' && buffer[1] == 'N') {
+        continue;
+      }
+
+      // During command mute window, drop incoming audio frames.
+      if (audio_is_muted_for_cmd()) {
         continue;
       }
 

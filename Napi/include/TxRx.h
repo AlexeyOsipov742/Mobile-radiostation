@@ -31,8 +31,8 @@
 // =====================
 
 // IP клиента (NaPi), куда Raspberry отправляет RX-аудио (radio -> NaPi)
-//#define SERVER_IP "10.10.1.149"
-#define SERVER_IP "192.168.31.20"
+#define SERVER_IP "10.10.1.123"
+//#define SERVER_IP "192.168.31.148"
 
 #define DEV_DIR "/dev"
 

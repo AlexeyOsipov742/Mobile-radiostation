@@ -24,8 +24,8 @@
 #include <thread>
 #include <mutex>
 
-//#define SERVER_IP "10.10.1.78"
-#define SERVER_IP "192.168.31.82"
+#define SERVER_IP "10.10.1.138"
+//#define SERVER_IP "192.168.31.33"
 #define DEV_DIR "/dev"
 #define BUFFER_SIZE 2048
 #define PERIODS 1024
@@ -42,21 +42,21 @@
 // Эти значения совпадают с тестовыми программами из папки audio/.
 // При необходимости можно поменять под свою разводку.
 #ifndef NAPI_SPI_DEV
-#define NAPI_SPI_DEV "/dev/spidev0.0"
+#define NAPI_SPI_DEV "/dev/spidev2.0"
 #endif
 
 #ifndef NAPI_DAC_CS_CHIP
-#define NAPI_DAC_CS_CHIP "/dev/gpiochip0"
+#define NAPI_DAC_CS_CHIP "/dev/gpiochip2"
 #endif
 #ifndef NAPI_DAC_CS_LINE
-#define NAPI_DAC_CS_LINE 23
+#define NAPI_DAC_CS_LINE 4
 #endif
 
 #ifndef NAPI_ADC_CS_CHIP
-#define NAPI_ADC_CS_CHIP "/dev/gpiochip0"
+#define NAPI_ADC_CS_CHIP "/dev/gpiochip2"
 #endif
 #ifndef NAPI_ADC_CS_LINE
-#define NAPI_ADC_CS_LINE 24
+#define NAPI_ADC_CS_LINE 5
 #endif
 
 // Локальная частота для ЦАП/АЦП (в тестах хорошо работает 11025/12000).
@@ -87,9 +87,16 @@ void command(std::atomic<bool> &running);
 extern std::mutex uart_mutex;
 extern std::atomic<bool> audio_running;
 extern std::atomic<bool> cmd_running;
+extern std::atomic<uint64_t> g_cmd_audio_mute_until_ns;
 
 void signal_handler(int signal);
 bool gpio_init();
 void gpio_cleanup();
 int gpio_get_ptt_level();
 void gpio_set_activity_led(bool on);
+
+uint64_t monotonic_now_ns();
+void audio_mute_for_cmd_ms(uint32_t ms);
+void audio_mute_set_for_cmd_ms(uint32_t ms);
+void audio_unmute_cmd_now();
+bool audio_is_muted_for_cmd();

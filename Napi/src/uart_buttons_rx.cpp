@@ -130,6 +130,11 @@ static bool recv_exact(int s, uint8_t* out, size_t n) {
     return true;
 }
 
+static void send_ack_status(int s, bool ok) {
+    const uint8_t b = ok ? 0x01 : 0x00;
+    (void)::send(s, &b, 1, MSG_NOSIGNAL);
+}
+
 void uart_buttons_rx_thread(int port, const char* tty, int baud_bps) {
     int uart = open_uart_sb9600(tty, baud_bps);
     if (uart < 0) {
@@ -181,16 +186,22 @@ void uart_buttons_rx_thread(int port, const char* tty, int baud_bps) {
 
         uint8_t cmd[5];
         bool ok = recv_exact(c, cmd, 5);
-        ::close(c);
-        if (!ok) continue;
+        if (!ok) {
+            send_ack_status(c, false);
+            ::close(c);
+            continue;
+        }
 
         // --- SB9600 transaction (TX only; RX is handled by UART_FWD thread) ---
+        bool tx_ok = false;
 
         // Wait bus free: on your station/adapter idle CTS=0
         if (!wait_cts_stable(uart, /*want_high=*/false, /*stable_count=*/10, /*timeout_ms=*/500)) {
             std::fprintf(stderr, "[BTN_RX] bus busy (CTS!=0), drop cmd: ");
             dump5(cmd);
             std::fprintf(stderr, "\n");
+            send_ack_status(c, false);
+            ::close(c);
             continue;
         }
 
@@ -215,10 +226,14 @@ void uart_buttons_rx_thread(int port, const char* tty, int baud_bps) {
             dump5(cmd);
             std::fprintf(stdout, "\n");
             std::fflush(stdout);
+            tx_ok = true;
         }
 
         // RELEASE BUS: RTS bit=0 => pin 3.3V
         set_line(uart, TIOCM_RTS, false);
+
+        send_ack_status(c, tx_ok);
+        ::close(c);
     }
 
     ::close(ls);
