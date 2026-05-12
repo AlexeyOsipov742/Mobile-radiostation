@@ -9,7 +9,7 @@ buildDir = build
 srcDir = src
 LIBS = -lgpiod -lm
 
-.PHONY: all clean prepare
+.PHONY: all clean prepare rtcaps
 all: prepare main
 
 $(addprefix $(buildDir)/, $(objects)): $(buildDir)/%.o: $(srcDir)/%.cpp
@@ -27,4 +27,9 @@ clean:
 prepare:
 		@mkdir -p $(buildDir)
 debug: 
-		
+
+rtcaps: main
+		@echo [CAP] setting realtime capabilities on $(buildDir)/main
+		@command -v setcap >/dev/null 2>&1 || { echo "setcap not found (install libcap2-bin)"; exit 1; }
+		@setcap cap_sys_nice,cap_ipc_lock+ep $(buildDir)/main
+		@getcap $(buildDir)/main || true

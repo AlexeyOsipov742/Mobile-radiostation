@@ -41,29 +41,6 @@
 #include <linux/spi/spidev.h>
 #include <sys/ioctl.h>
 
-#if __has_include(<gpiod.h>)
-  #include <gpiod.h>
-#elif __has_include(<gpiod/gpiod.h>)
-  #include <gpiod/gpiod.h>
-#else
-extern "C" {
-  struct gpiod_chip;
-  struct gpiod_line;
-  typedef struct gpiod_chip gpiod_chip;
-  typedef struct gpiod_line gpiod_line;
-  gpiod_chip *gpiod_chip_open(const char *path);
-  void gpiod_chip_close(gpiod_chip *chip);
-  gpiod_line *gpiod_chip_get_line(gpiod_chip *chip, unsigned int offset);
-  int gpiod_line_request_output(gpiod_line *line, const char *consumer, int default_val);
-  void gpiod_line_release(gpiod_line *line);
-  int gpiod_line_set_value(gpiod_line *line, int value);
-}
-#endif
-
-#ifndef SPI_NO_CS
-  #define SPI_NO_CS 0x40
-#endif
-
 static inline int clampi(int v, int lo, int hi) {
   return (v < lo) ? lo : (v > hi) ? hi : v;
 }
@@ -91,51 +68,52 @@ static inline void busy_wait_to(uint64_t t_next) {
   while ((now = now_ns()) < t_next) { /* spin */ }
 }
 
-// ---------- GPIO CS ----------
-struct GpioCs {
-  gpiod_chip *chip{nullptr};
-  gpiod_line *line{nullptr};
+static bool env_enabled(const char *name) {
+  const char *v = std::getenv(name);
+  return v && *v && std::strcmp(v, "0") != 0;
+}
 
-  bool open(const char *chip_path, unsigned offset, const char *consumer) {
-    chip = gpiod_chip_open(chip_path);
-    if (!chip) {
-      std::fprintf(stderr, "gpiod_chip_open(%s) failed: %s\n", chip_path, std::strerror(errno));
-      return false;
-    }
-    line = gpiod_chip_get_line(chip, offset);
-    if (!line) {
-      std::fprintf(stderr, "gpiod_chip_get_line(%s,%u) failed: %s\n", chip_path, offset, std::strerror(errno));
-      gpiod_chip_close(chip);
-      chip = nullptr;
-      return false;
-    }
-    if (gpiod_line_request_output(line, consumer, 1) != 0) {
-      std::fprintf(stderr, "gpiod_line_request_output(%s,%u) failed: %s\n", chip_path, offset, std::strerror(errno));
-      gpiod_chip_close(chip);
-      chip = nullptr;
-      line = nullptr;
-      return false;
-    }
-    (void)gpiod_line_set_value(line, 1);
-    return true;
+static void dump_rx_meter(const char *backend,
+                          uint32_t chunks,
+                          uint32_t bytes,
+                          uint32_t max_gap_ms,
+                          uint32_t max_push_ms,
+                          const int16_t *s,
+                          size_t n)
+{
+  if (!s || n == 0) return;
+
+  int16_t mn = s[0], mx = s[0];
+  int64_t sum = 0;
+  double sumsq = 0.0;
+  uint32_t near_clip = 0;
+  uint32_t near_zero = 0;
+
+  for (size_t i = 0; i < n; ++i) {
+    int16_t v = s[i];
+    mn = std::min(mn, v);
+    mx = std::max(mx, v);
+    sum += v;
+    sumsq += (double)v * (double)v;
+    if (v > 32000 || v < -32000) near_clip++;
+    if (v > -64 && v < 64) near_zero++;
   }
 
-  inline void set(int v) {
-    if (line) (void)gpiod_line_set_value(line, v);
-  }
+  const double mean = (double)sum / (double)n;
+  const double rms = std::sqrt(sumsq / (double)n);
 
-  void close() {
-    if (line) {
-      (void)gpiod_line_set_value(line, 1);
-      gpiod_line_release(line);
-      line = nullptr;
-    }
-    if (chip) {
-      gpiod_chip_close(chip);
-      chip = nullptr;
-    }
+  std::fprintf(stderr,
+      "[RX-METER] backend=%s chunks=%u bytes=%u max_gap_ms=%u max_push_ms=%u "
+      "s16[min=%d max=%d mean=%.1f rms=%.1f clip=%u zero=%u] first8=",
+      backend, chunks, bytes, max_gap_ms, max_push_ms,
+      (int)mn, (int)mx, mean, rms, near_clip, near_zero);
+
+  size_t show = std::min<size_t>(8, n);
+  for (size_t i = 0; i < show; ++i) {
+    std::fprintf(stderr, "%s%d", (i == 0 ? "" : ","), (int)s[i]);
   }
-};
+  std::fprintf(stderr, "\n");
+}
 
 // ---------- MCP4822 ----------
 static inline uint16_t mcp4822_word(bool chB, uint16_t u12) {
@@ -219,15 +197,13 @@ public:
          uint32_t spi_hz,
          float vol,
          uint32_t fs_in,
-         uint32_t fs_out,
-         gpiod_line *cs_line)
+         uint32_t fs_out)
       : dev(spi_dev),
         chB(chB),
         spi_hz(spi_hz),
         vol(vol),
         Fs_in(fs_in),
         Fs_out(fs_out),
-        cs(cs_line),
         q((size_t)fs_out * 1) // 1 сек буфера
   {}
 
@@ -318,6 +294,13 @@ private:
     tr.cs_change = 0;
     tr.delay_usecs = 0;
 
+    auto write_u12 = [&](uint16_t u12) {
+      uint16_t w = mcp4822_word(chB, u12);
+      tx[0] = (uint8_t)(w >> 8);
+      tx[1] = (uint8_t)(w & 0xFF);
+      (void)ioctl(sfd, SPI_IOC_MESSAGE(1), &tr);
+    };
+
     // ресэмпл (если Fs_in != Fs_out): простой линейный
     double ratio = (double)Fs_in / (double)Fs_out;
     double pos = 0.0;
@@ -328,15 +311,6 @@ private:
     float env = 0.0f;
     const float fadeUp   = 1.0f / (0.010f * (float)Fs_out);
     const float fadeDown = 1.0f / (0.010f * (float)Fs_out);
-
-    auto write_u12 = [&](uint16_t u12) {
-      uint16_t w = mcp4822_word(chB, u12);
-      tx[0] = (uint8_t)(w >> 8);
-      tx[1] = (uint8_t)(w & 0xFF);
-      if (cs) (void)gpiod_line_set_value(cs, 0);
-      (void)ioctl(sfd, SPI_IOC_MESSAGE(1), &tr);
-      if (cs) (void)gpiod_line_set_value(cs, 1);
-    };
 
     auto reset_state = [&](){
       uint32_t req = fs_in_req.load(std::memory_order_relaxed);
@@ -448,7 +422,6 @@ private:
   uint32_t Fs_out;
 
   int sfd{-1};
-  gpiod_line *cs{nullptr};
 
   std::thread th;
   std::atomic<bool> running{false};
@@ -489,6 +462,7 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
   const uint32_t Fs_out = (uint32_t)NAPI_LOCAL_FS;      // например 12000
   const uint32_t Fs_in  = (uint32_t)NAPI_LOCAL_FS;      // ожидаем 12000 от Raspberry
   const int channels    = (int)NAPI_RX_NET_CHANNELS;    // 1 или 2 (берём левый)
+  const bool rx_debug   = env_enabled("AUDIO_RX_DEBUG");
 
   // SPI DAC
   const char *SPI_DEV = NAPI_SPI_DEV;
@@ -496,17 +470,9 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
   uint32_t    SPI_HZ  = 1000000;   // безопасно
   float       VOL     = 0.5f;
 
-  // GPIO-CS для DAC
-  GpioCs dac_cs;
-  if (!dac_cs.open(NAPI_DAC_CS_CHIP, (unsigned)NAPI_DAC_CS_LINE, "napi-dac-cs")) {
-    std::fprintf(stderr, "[RX] DAC-CS init failed\n");
-    return;
-  }
-
-  SpiDac dac(SPI_DEV, DAC_CHB, SPI_HZ, VOL, Fs_in, Fs_out, dac_cs.line);
+  SpiDac dac(SPI_DEV, DAC_CHB, SPI_HZ, VOL, Fs_in, Fs_out);
   if (!dac.start()) {
     std::fprintf(stderr, "[RX] DAC start failed\n");
-    dac_cs.close();
     return;
   }
 
@@ -517,7 +483,6 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
   if (sockfd < 0) {
     std::perror("socket");
     dac.stop();
-    dac_cs.close();
     return;
   }
 
@@ -533,7 +498,6 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
     std::perror("bind");
     ::close(sockfd);
     dac.stop();
-    dac_cs.close();
     return;
   }
 
@@ -541,7 +505,6 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
     std::perror("listen");
     ::close(sockfd);
     dac.stop();
-    dac_cs.close();
     return;
   }
 
@@ -591,6 +554,13 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
     // FIX: watchdog "нет данных" — если долго не получаем ни одного полного блока, закрываем сессию
     const uint64_t kNoDataTimeoutNs = 2ull * 1000000000ull; // 2 секунды без данных
     uint64_t last_ok_ns = now_ns();
+    uint64_t last_chunk_ns = 0;
+    uint64_t last_meter_ns = now_ns();
+    uint32_t meter_chunks = 0;
+    uint32_t meter_bytes = 0;
+    uint32_t max_gap_ms = 0;
+    uint32_t max_push_ms = 0;
+    bool meter_printed_first = false;
 
     // RX loop
     while (running.load()) {
@@ -612,6 +582,13 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
       }
 
       last_ok_ns = now_ns();
+      if (last_chunk_ns != 0) {
+        uint32_t gap_ms = (uint32_t)((last_ok_ns - last_chunk_ns) / 1000000ull);
+        max_gap_ms = std::max(max_gap_ms, gap_ms);
+      }
+      last_chunk_ns = last_ok_ns;
+      meter_chunks++;
+      meter_bytes += (uint32_t)BUFFER_SIZE;
 
       // отфильтровать управляющее "KN" (если оно реально прилетает в этот канал)
       if (buffer[0] == 'K' && buffer[1] == 'N') {
@@ -629,7 +606,21 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
       int frames = bytes / frame_bytes;
       if (frames <= 0) continue;
 
+      uint64_t push_t0 = now_ns();
       dac.push_frames((const int16_t *)buffer, (size_t)frames, channels);
+      uint32_t push_ms = (uint32_t)((now_ns() - push_t0) / 1000000ull);
+      max_push_ms = std::max(max_push_ms, push_ms);
+
+      if (rx_debug && (!meter_printed_first || (now_ns() - last_meter_ns > 1000000000ull))) {
+        dump_rx_meter("client-rx", meter_chunks, meter_bytes, max_gap_ms, max_push_ms,
+                      (const int16_t *)buffer, (size_t)(BUFFER_SIZE / sizeof(int16_t)));
+        meter_printed_first = true;
+        meter_chunks = 0;
+        meter_bytes = 0;
+        max_gap_ms = 0;
+        max_push_ms = 0;
+        last_meter_ns = now_ns();
+      }
     }
 
     // закрываем клиента
@@ -646,6 +637,5 @@ void audioRxEth_client(unsigned char *buffer, std::atomic<bool> &running) {
 
   gpio_set_activity_led(false);
   dac.stop();
-  dac_cs.close();
   std::memset(buffer, 0, BUFFER_SIZE);
 }

@@ -14,8 +14,6 @@ int main() {
     }
 
     gpio_set_ptt(0);
-    gpio_set_dac_cs(1);
-    gpio_set_adc_cs(1);
 
 
     {

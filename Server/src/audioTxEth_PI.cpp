@@ -137,10 +137,7 @@ bool send_all(int sockfd, const uint8_t *data, size_t bytes) {
 }
 
 inline uint16_t adc_read_u12(int spi_fd, spi_ioc_transfer &tr, uint8_t rx[2]) {
-    // CS (active low) вручную через GPIO
-    gpio_set_adc_cs(false);
     int ret = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr);
-    gpio_set_adc_cs(true);
     if (ret < 0) {
         std::perror("SPI_IOC_MESSAGE (ADC)");
         return 2048;
@@ -255,7 +252,6 @@ void audioTxEth_PI(unsigned char *buffer) {
     }
 
     // cleanup
-    gpio_set_adc_cs(true);
     ::close(spi_fd);
     ::close(sockfd);
     usleep(10'000);

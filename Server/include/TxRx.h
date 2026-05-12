@@ -31,8 +31,8 @@
 // =====================
 
 // IP клиента (NaPi), куда Raspberry отправляет RX-аудио (radio -> NaPi)
-#define SERVER_IP "10.10.1.123"
-//#define SERVER_IP "192.168.31.148"
+//#define SERVER_IP "10.10.1.123"
+#define SERVER_IP "192.168.31.223"
 
 #define DEV_DIR "/dev"
 
@@ -77,16 +77,8 @@
 #define RPI_SPI_DEV "/dev/spidev2.0"
 #endif
 
-// Чип-селекты для АЦП/ЦАП, если вы используете отдельные GPIO линии (НЕ CE0/CE1).
-// ВАЖНО: wiringPiSetupGpio() использует BCM-нумерацию!
-// Поставьте здесь те номера GPIO, которые реально подключены к CS MCP4822 и CS MCP3201.
-#ifndef RPI_DAC_CS_GPIO
-#define RPI_DAC_CS_GPIO 4
-#endif
-
-#ifndef RPI_ADC_CS_GPIO
-#define RPI_ADC_CS_GPIO 5
-#endif
+// Используется аппаратный CS SPI-контроллера.
+// Внешняя логика маршрутизирует его на ADC/DAC.
 
 // Скорость SPI. 1 MHz обычно стабильно.
 #ifndef RPI_SPI_SPEED_HZ
@@ -135,7 +127,3 @@ void gpio_cleanup();
 // COR: 0/1 (как в gpiod), но логика COR у тебя "active LOW"
 int  gpio_get_cor_level();      // вернёт 0/1
 void gpio_set_ptt(int level);   // 0/1
-
-void gpio_set_dac_cs(int level); // 0/1
-void gpio_set_adc_cs(int level); // 0/1
-

@@ -24,8 +24,8 @@
 #include <thread>
 #include <mutex>
 
-#define SERVER_IP "10.10.1.138"
-//#define SERVER_IP "192.168.31.33"
+//#define SERVER_IP "10.10.1.138"
+#define SERVER_IP "192.168.31.117"
 #define DEV_DIR "/dev"
 #define BUFFER_SIZE 2048
 #define PERIODS 1024
@@ -37,26 +37,11 @@
 #define CAPTURE_DEV "hw:0,6"
 #define PLAYBACK_DEV "hw:0,0"
 
-// ===== NaPi audio (SPI + GPIO-CS) =====
-// На NaPi доступна только одна SPI-шина, поэтому CS для ЦАП/АЦП управляем через GPIO.
-// Эти значения совпадают с тестовыми программами из папки audio/.
-// При необходимости можно поменять под свою разводку.
+// ===== NaPi audio (SPI) =====
+// Используется аппаратный CS SPI-контроллера.
+// Внешняя логика маршрутизирует его на ADC/DAC.
 #ifndef NAPI_SPI_DEV
 #define NAPI_SPI_DEV "/dev/spidev2.0"
-#endif
-
-#ifndef NAPI_DAC_CS_CHIP
-#define NAPI_DAC_CS_CHIP "/dev/gpiochip2"
-#endif
-#ifndef NAPI_DAC_CS_LINE
-#define NAPI_DAC_CS_LINE 4
-#endif
-
-#ifndef NAPI_ADC_CS_CHIP
-#define NAPI_ADC_CS_CHIP "/dev/gpiochip2"
-#endif
-#ifndef NAPI_ADC_CS_LINE
-#define NAPI_ADC_CS_LINE 5
 #endif
 
 // Локальная частота для ЦАП/АЦП (в тестах хорошо работает 11025/12000).
