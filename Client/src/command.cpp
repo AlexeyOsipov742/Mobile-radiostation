@@ -1,5 +1,6 @@
 #include "TxRx.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstdint>
@@ -194,63 +195,188 @@ struct ScreenState {
     std::string line[4];
 };
 
-// Extract SBEP-ish display update blocks.
-// Empirically for XTL front panel we see blocks that contain:
-//   1F 00 .. .. .. .. row 00 [ASCII...]
-// where row = 0,1,2 correspond to the 3 text lines we want.
-//
-// We DO NOT convert the whole packet to ASCII; we only extract
-// text from these 1F 00 blocks to avoid garbage like \"Wg\".
-static void apply_display_updates(const uint8_t* data, int len, ScreenState& st, Lcd20x4& lcd) {
+struct SbepMsg {
+    uint16_t opcode = 0;
+    std::vector<uint8_t> data;
+};
+
+enum class ParseRes {
+    Ok,
+    Incomplete,
+    Invalid
+};
+
+static bool sbep_checksum_ok(const uint8_t* msg, size_t n) {
+    if (n < 2) return true;
+    uint32_t sum = 0;
+    for (size_t i = 0; i + 1 < n; ++i) sum += msg[i];
+    const uint8_t expect = (uint8_t)(0xFF - (sum & 0xFF));
+    return expect == msg[n - 1];
+}
+
+static ParseRes sbep_try_head(const std::vector<uint8_t>& stream,
+                              size_t& out_total_len,
+                              uint16_t& out_opcode,
+                              size_t& out_data_start,
+                              size_t& out_data_len) {
+    if (stream.empty()) return ParseRes::Incomplete;
+
+    const uint8_t b0 = stream[0];
+    const uint8_t msn = (b0 >> 4) & 0x0F;
+    const uint8_t lsn = (b0 & 0x0F);
+    size_t idx = 1;
+
+    const bool ext_opcode = (msn == 0x0F);
+    const bool ext_size = (lsn == 0x0F);
+
+    if (!ext_opcode) {
+        out_opcode = msn;
+    } else {
+        if (idx >= stream.size()) return ParseRes::Incomplete;
+        out_opcode = stream[idx];
+        idx += 1;
+    }
+
+    uint32_t follow = 0;
+    if (!ext_size) {
+        follow = lsn;
+    } else {
+        if (idx + 1 >= stream.size()) return ParseRes::Incomplete;
+        follow = ((uint16_t)stream[idx] << 8) | (uint16_t)stream[idx + 1];
+        idx += 2;
+    }
+
+    if (follow > 4096) return ParseRes::Invalid;
+    const size_t total = idx + (size_t)follow;
+    if (stream.size() < total) return ParseRes::Incomplete;
+
+    const bool has_ck = (follow > 0);
+    const size_t data_end = total - (has_ck ? 1 : 0);
+
+    out_total_len = total;
+    out_data_start = idx;
+    out_data_len = (data_end > idx) ? (data_end - idx) : 0;
+
+    if (has_ck && !sbep_checksum_ok(stream.data(), total)) return ParseRes::Invalid;
+    return ParseRes::Ok;
+}
+
+static bool sbep_extract_next(std::vector<uint8_t>& stream, SbepMsg& out) {
+    const size_t kMaxKeep = 64 * 1024;
+    const size_t kTailKeep = 8 * 1024;
+
+    if (stream.empty()) return false;
+
+    while (!stream.empty()) {
+        size_t total_len = 0;
+        uint16_t opcode = 0;
+        size_t data_start = 0;
+        size_t data_len = 0;
+
+        ParseRes pr = sbep_try_head(stream, total_len, opcode, data_start, data_len);
+        if (pr == ParseRes::Incomplete) {
+            if (stream.size() > kMaxKeep && stream.size() > kTailKeep) {
+                stream.erase(stream.begin(), stream.end() - (long)kTailKeep);
+            }
+            return false;
+        }
+        if (pr == ParseRes::Invalid) {
+            stream.erase(stream.begin());
+            continue;
+        }
+
+        out.opcode = opcode;
+        out.data.assign(stream.begin() + (long)data_start, stream.begin() + (long)(data_start + data_len));
+        stream.erase(stream.begin(), stream.begin() + (long)total_len);
+        return true;
+    }
+
+    return false;
+}
+
+static bool handle_update_display(const SbepMsg& m, ScreenState& st, Lcd20x4& lcd) {
+    // Update Display opcode=$01:
+    // data[2]=cc, data[3]=row, data[4]=col, then cc bytes of text.
+    if (m.data.size() < 5) return false;
+
+    const uint8_t cc = m.data[2];
+    const uint8_t row = m.data[3] & 0x7F;
+    if (row > 3) return false;
+
+    if (cc == 0xFF) {
+        for (auto& s : st.line) s.clear();
+        for (int r = 0; r < 4; ++r) lcd.write_line((uint8_t)r, "");
+        return true;
+    }
+    if (cc == 0) return true;
+    if (m.data.size() < 5 + (size_t)cc) return false;
+
+    std::string text;
+    text.reserve(cc);
+    for (size_t i = 0; i < (size_t)cc; ++i) {
+        const uint8_t b = m.data[5 + i];
+        const char ch = (b == 0x00) ? ' ' : (char)b;
+        if (std::isprint((unsigned char)ch) || ch == ' ') text.push_back(ch);
+        else text.push_back(' ');
+    }
+
+    std::string shown = text;
+    if (row == 2) shown = format_softkeys_5x4(text);
+    else {
+        replace_caret_with_space(shown);
+        rtrim_spaces(shown);
+    }
+
+    if ((int)shown.size() > 20) shown.resize(20);
+    if (st.line[row] == shown) return true;
+
+    st.line[row] = shown;
+    lcd.write_line(row, shown);
+    std::printf("LCD row%u: %s\n", row + 1, shown.c_str());
+    return true;
+}
+
+// Legacy fallback: parse "SBEP-ish" chunks directly from raw stream.
+// Some radios/heads expose display text in 1F 00 .. blocks even when strict SBEP
+// decoding does not yield opcode=0x01 updates.
+static int apply_display_updates_legacy(const uint8_t* data, int len, ScreenState& st, Lcd20x4& lcd) {
+    int updates = 0;
     for (int i = 0; i + 10 <= len; ++i) {
         if (data[i] != 0x1F || data[i + 1] != 0x00) continue;
 
-        // row index (based on your captured frames)
-        uint8_t row = data[i + 6];
+        const uint8_t row = data[i + 6];
         if (row > 3) continue;
 
-        // text starts at i+8
         int j = i + 8;
         std::string text;
-        text.reserve(32);
-
-        // read until 0x00 padding or until non-printable long gap
-        // but allow spaces and '^'
+        text.reserve(40);
         for (; j < len; ++j) {
-            uint8_t c = data[j];
+            const uint8_t c = data[j];
             if (c == 0x00) break;
             if (c == '^' || c == ' ' || (c >= 0x20 && c <= 0x7E)) {
                 text.push_back((char)c);
-                if ((int)text.size() >= 40) break; // hard cap
-            } else {
-                // stop if we've already started collecting
-                if (!text.empty()) break;
+                if ((int)text.size() >= 40) break;
+            } else if (!text.empty()) {
+                break;
             }
         }
 
         rtrim_spaces(text);
         if (text.empty()) continue;
 
-        // Row2 = softkeys; render as 5×4 to fit 20 chars.
         std::string shown = text;
-        if (row == 2) {
-            shown = format_softkeys_5x4(text);
-        } else {
-            // For other rows: just replace '^' with space (rare but safe)
-            replace_caret_with_space(shown);
-        }
+        if (row == 2) shown = format_softkeys_5x4(text);
+        else replace_caret_with_space(shown);
 
-        // clamp for LCD
         if ((int)shown.size() > 20) shown.resize(20);
+        if (st.line[row] == shown) continue;
 
-        if (st.line[row] != shown) {
-            st.line[row] = shown;
-            lcd.write_line((uint8_t)row, shown);
-
-            // optional terminal log (kept short)
-            std::printf("LCD row%u: %s\n", row + 1, shown.c_str());
-        }
+        st.line[row] = shown;
+        lcd.write_line(row, shown);
+        std::printf("LCD row%u (legacy): %s\n", row + 1, shown.c_str());
+        updates++;
     }
+    return updates;
 }
 
 static int make_listen_socket(int port) {
@@ -326,8 +452,9 @@ void command(std::atomic<bool> &running) {
     ScreenState st;
     for (auto& s : st.line) s.clear();
 
-    std::vector<uint8_t> payload;
-    payload.resize(4096);
+    std::vector<uint8_t> payload(4096);
+    std::vector<uint8_t> stream;
+    stream.reserve(128 * 1024);
 
     while (running) {
         fd_set rfds;
@@ -365,11 +492,30 @@ void command(std::atomic<bool> &running) {
         }
         ::close(cs);
 
-        apply_display_updates(payload.data(), (int)len, st, lcd);
+        std::printf("[CMD] RX frame: %u bytes\n", len);
+        stream.insert(stream.end(), payload.begin(), payload.begin() + len);
+
+        int extracted = 0;
+        int sbep_updates = 0;
+        while (true) {
+            SbepMsg m{};
+            if (!sbep_extract_next(stream, m)) break;
+            extracted++;
+            if (m.opcode == 0x01 && handle_update_display(m, st, lcd)) {
+                sbep_updates++;
+            }
+        }
+
+        int legacy_updates = 0;
+        if (sbep_updates == 0) {
+            legacy_updates = apply_display_updates_legacy(payload.data(), (int)len, st, lcd);
+        }
+
+        std::printf("[CMD] SBEP extracted=%d updates=%d legacy=%d stream_buf=%zu\n",
+                    extracted, sbep_updates, legacy_updates, stream.size());
     }
 
     ::close(ls);
     lcd.close_dev();
     std::printf("[CMD] Screen RX stopped\n");
 }
-

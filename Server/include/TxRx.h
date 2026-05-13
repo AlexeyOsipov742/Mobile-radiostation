@@ -31,15 +31,15 @@
 // =====================
 
 // IP клиента (NaPi), куда Raspberry отправляет RX-аудио (radio -> NaPi)
-//#define SERVER_IP "10.10.1.123"
-#define SERVER_IP "192.168.31.223"
+#define SERVER_IP "10.10.1.138"
+//#define SERVER_IP "192.168.31.223"
 
 #define DEV_DIR "/dev"
 
 // Сетевой пакет аудио: 2048 байт = 1024 семпла S16LE mono
 #define BUFFER_SIZE 2048
 
-#define TTY "/dev/ttyUSB0"
+#define TTY "/dev/ttyS0"
 
 // Audio TCP port (и для RX, и для TX)
 #define PORT 5678
